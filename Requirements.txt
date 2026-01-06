@@ -1,5 +1,1 @@
-streamlit
-opencv-python-headless
-yt-dlp
-numpy
-Pillow
+streamlit opencv-python-headless yt-dlp numpy Pillow
