@@ -30,58 +30,31 @@ if 'ready_segment' not in st.session_state:
     st.session_state['ready_segment'] = None 
 
 # --------------------------------------------------------------------------
-# PROXY & AUTHENTICATION SETUP (HARDCODED)
+# PROXY SETUP (Hardcoded)
 # --------------------------------------------------------------------------
 proxy_url = "http://tdwdphqm:qretvj7vcdpn@142.111.48.253:7030/"
 
-# Note: Cookies are defined but NOT passed to yt-dlp below to prevent 
-# the 'skipping client' error on Android/iOS.
-cookies_content = """
-# Netscape HTTP Cookie File
-# https://curl.haxx.se/rfc/cookie_spec.html
-# This is a generated file! Do not edit.
-
-.youtube.com	TRUE	/	FALSE	1800984180	HSID	A4hsFz2nKEH1g3kBH
-.youtube.com	TRUE	/	TRUE	1800984180	SSID	AWU2iDSi0RqLiKn1N
-.youtube.com	TRUE	/	FALSE	1800984180	APISID	3fBoA-uErDQBPW5p/A2Y2Gpu1VGanIROeG
-.youtube.com	TRUE	/	TRUE	1800984180	SAPISID	9Ja8c2ZAomN7AcMu/AwYqig-E7_alzhED3
-.youtube.com	TRUE	/	TRUE	1800984180	__Secure-1PAPISID	9Ja8c2ZAomN7AcMu/AwYqig-E7_alzhED3
-.youtube.com	TRUE	/	TRUE	1800984180	__Secure-3PAPISID	9Ja8c2ZAomN7AcMu/AwYqig-E7_alzhED3
-.youtube.com	TRUE	/	FALSE	1800984180	SID	g.a0004ggeOS1gvfcHMfB90kt47QWc6-kW4aySvk8n0cqdNMACwg3dYRFU7GbW1lQksGWEeJCwVAACgYKARoSARYSFQHGX2MiGA6kzJYp04T8m4WAgyYPoBoVAUF8yKrRR2iL1vggA9Urw22aQ2me0076
-.youtube.com	TRUE	/	TRUE	1800984180	__Secure-1PSID	g.a0004ggeOS1gvfcHMfB90kt47QWc6-kW4aySvk8n0cqdNMACwg3dgsGgyAPCDC9RYx7hLTKvJQACgYKATYSARYSFQHGX2Mi2smV4GftRiabO8Up7Pnv9xoVAUF8yKq2onQxqYwVqSHGr_7ibVg10076
-.youtube.com	TRUE	/	TRUE	1800984180	__Secure-3PSID	g.a0004ggeOS1gvfcHMfB90kt47QWc6-kW4aySvk8n0cqdNMACwg3dBP9jWHCmdGdVaXY4Kf38OgACgYKAQ0SARYSFQHGX2MiuLWquMdfkKNnkR-3y_cPhxoVAUF8yKozKpr8WYVwETdUnlWHXPjZ0076
-.youtube.com	TRUE	/	TRUE	1800984213	LOGIN_INFO	AFmmF2swRQIhAMkiXg1KX-PwsNmUCEAGeaFk5EWzuhI4Jkh9X6YPu2Y-AiB8tgc5kvtsWg56I1lyQ3tZQaufJ7Rc5TwmRIqYTr7OuQ:QUQ3MjNmeWRlekdNMHlwNVFjVkNQb0pGWEM4aDFkRVFna0FwMVMycjVjSGRyWlNtakpOaVRUNGthV1B4MGxPN20ycXk5ZVNFTjZmTEd0dTJXWE4xUm5nZVFuTGtGcFFmOHc3ejNXWHJQNVdPUEJPY2RSWUV5Z2stOGpfTmdnaXlVQ0ljN0I3eEloVWdJTVVxcTlHV200aUNlQm5MdzRwb1Bn
-.youtube.com	TRUE	/	TRUE	1802278429	PREF	f6=40000000&tz=Asia.Calcutta
-.youtube.com	TRUE	/	TRUE	1799260471	__Secure-1PSIDTS	sidts-CjUBflaCdc-X3P1AslBqrx1NQBCF7e19wZEHNb58EY8e1CrDY6OPoGy3OL7xQC8tYmWluWXCERAA
-.youtube.com	TRUE	/	TRUE	1799260471	__Secure-3PSIDTS	sidts-CjUBflaCdc-X3P1AslBqrx1NQBCF7e19wZEHNb58EY8e1CrDY6OPoGy3OL7xQC8tYmWluWXCERAA
-.youtube.com	TRUE	/	FALSE	1799260471	SIDCC	AKEyXzUKeU4XZQq6yW6N6tyW4B3DtXGiAOF-wRIfNyWvy1lXmLFC01EfMDwZcU99k8bBGQzq
-.youtube.com	TRUE	/	TRUE	1799260471	__Secure-1PSIDCC	AKEyXzVwLEfxd0-IHoF0P-eqLjwrcaWs6tFTlbwADuu3xjgGr7nbPwUC4zHW3Cpt5ctv_Q41
-.youtube.com	TRUE	/	TRUE	1799260471	__Secure-3PSIDCC	AKEyXzVqUMADmqTIH8bu8gpe2RJV-xzt81bw1mRCh4bqRcEG075dSzMm_F-WFWsm4QiqwKq9xw
-.youtube.com	TRUE	/	TRUE	1783270427	VISITOR_INFO1_LIVE	5fM7NNbqmFA
-.youtube.com	TRUE	/	TRUE	1783270427	VISITOR_PRIVACY_METADATA	CgJJThIEGgAgLw%3D%3D
-.youtube.com	TRUE	/	TRUE	1783251000	__Secure-YNID	14.YT=nqtYLCpcEEhqgsrPYFNa8mKiMcyowifEt3vVzNaFfbYMcYbGKJmu8KeIHdSemKLJ1Go-DGjoKkD1urtVr1-c_MGBL4lnXbmz7F-E4lkpT3SDnysLsaGSKxbO_QKqATOxfppBs657PZHphHvSBZI30poPIa26k2p7sT6yWU9PU9JIuDriVlIPBn-YR-ViP3EWlMizxlRM44l10yM6fybGCqRMjHQQg2GCBFQFSs-0cFIEFwx8nF09lcSFfmIKBwDdBEP8oDkDt7dWSYF8PFICU0lBP_w0ojerXlgZ4vQ-7MkUqisoAqiGajf3WuMULOPjDvjX0CNs8lWMBM3uGM8Z2A
-.youtube.com	TRUE	/	TRUE	1783251001	__Secure-ROLLOUT_TOKEN	CNyX9Mn34tPdDBCJ66D35_aRAxix_t735_aRAw%3D%3D
-.youtube.com	TRUE	/	TRUE	0	YSC	mH0ZeUnjO68
-"""
-
-@st.cache_resource
-def setup_cookies_file():
-    try:
-        # Create a temp file that persists for the session
-        fp = tempfile.NamedTemporaryFile(delete=False, suffix='.txt', mode='w', encoding='utf-8')
-        # FIX: Strip the leading newline so the file starts with '# Netscape...'
-        fp.write(cookies_content.strip())
-        fp.close()
-        return fp.name
-    except Exception as e:
-        st.error(f"Error setting up cookies: {e}")
-        return None
-
-cookies_path = setup_cookies_file()
-
-# 2. SIDEBAR SETTINGS
+# 2. SIDEBAR SETTINGS & COOKIES
 with st.sidebar:
     st.header("⚙️ Settings")
+    
+    st.subheader("🍪 Authentication")
+    st.markdown("Upload `cookies.txt` to bypass age restrictions or bot checks.")
+    uploaded_cookies = st.file_uploader("Upload cookies.txt", type=['txt'])
+    
+    cookies_path = None
+    if uploaded_cookies:
+        try:
+            # Save uploaded bytes to a temp file
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.txt', mode='wb') as fp:
+                fp.write(uploaded_cookies.getvalue())
+                cookies_path = fp.name
+            st.success("✅ Cookies loaded")
+        except Exception as e:
+            st.error(f"Error loading cookies: {e}")
+
+    st.divider()
+    
     st.subheader("🔍 Detection Settings")
     sensitivity = st.slider("Color Sensitivity", min_value=10, max_value=100, value=35, help="Higher = less sensitive to small color changes")
     strictness = st.slider("Strictness (%)", min_value=0.1, max_value=100.0, value=1.0, step=0.1, help="Percentage of screen that must change to trigger a capture")
@@ -101,17 +74,17 @@ class MyLogger:
 # --- HELPERS: METADATA ---
 def get_video_info(youtube_url, cookies_file=None, proxy=None):
     logger = MyLogger()
-    # MODIFIED: Use Android client WITHOUT COOKIES to allow robust access
     ydl_opts = {
         'quiet': True, 
         'no_warnings': True, 
         'logger': logger, 
         'nocheckcertificate': True,
-        # We allow android and ios. No manual user_agent.
-        'extractor_args': {'youtube': {'player_client': ['android', 'ios']}},
+        # Allow multiple clients for robustness
+        'extractor_args': {'youtube': {'player_client': ['android', 'ios', 'web']}},
     }
-    # Commented out cookiefile: Passing it causes yt-dlp to SKIP android/ios clients
-    # if cookies_file: ydl_opts['cookiefile'] = cookies_file
+    
+    if cookies_file: 
+        ydl_opts['cookiefile'] = cookies_file
     
     if proxy: ydl_opts['proxy'] = proxy
     try:
@@ -246,19 +219,18 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
     if process_dl_btn:
         st.session_state['captured_images'] = []
         with tempfile.TemporaryDirectory() as tmp_dir:
-            # MODIFIED: Removed manual user_agent, adjusted clients
             ydl_opts = {
                 'format': format_str,
                 'outtmpl': os.path.join(tmp_dir, '%(title)s.%(ext)s'),
                 'proxy': proxy_url,
-                # 'cookiefile': cookies_path, # Disabled
                 'quiet': True,
                 'no_warnings': True,
                 'download_ranges': download_range_func,
-                # MODIFIED: Use iOS client + User Agent
-                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'extractor_args': {'youtube': {'player_client': ['ios', 'web']}},
+                'extractor_args': {'youtube': {'player_client': ['ios', 'android', 'web']}},
             }
+            if cookies_path:
+                ydl_opts['cookiefile'] = cookies_path
+
             try:
                 with st.spinner("Downloading video segment..."):
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -301,20 +273,18 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                 status_text.text("Download complete. Starting Scan...")
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            # MODIFIED: Removed manual user_agent, adjusted clients
             ydl_opts = {
                 'format': format_str,
                 'outtmpl': os.path.join(tmp_dir, '%(title)s.%(ext)s'),
                 'progress_hooks': [progress_hook],
                 'proxy': proxy_url,
-                # 'cookiefile': cookies_path, # Disabled
                 'quiet': True,
                 'no_warnings': True,
                 'download_ranges': download_range_func,
-                # MODIFIED: Use iOS client + User Agent
-                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'extractor_args': {'youtube': {'player_client': ['ios', 'web']}},
+                'extractor_args': {'youtube': {'player_client': ['ios', 'android', 'web']}},
             }
+            if cookies_path:
+                ydl_opts['cookiefile'] = cookies_path
 
             try:
                 with st.spinner("Downloading video segments to server..."):
