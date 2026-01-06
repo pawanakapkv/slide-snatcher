@@ -7,6 +7,7 @@ import os
 import tempfile
 import sys
 import shutil
+import logging
 from PIL import Image
 
 # 1. PAGE CONFIGURATION
@@ -77,40 +78,53 @@ with st.sidebar:
     max_skip = st.slider("Max Jump (Seconds)", 5, 30, 10)
 
 # --- CUSTOM LOGGER FOR DEBUGGING ---
+# Captures logs to show in UI if something fails
 class MyLogger:
-    def debug(self, msg): pass
-    def info(self, msg): print(f"[YTDLP-INFO] {msg}"); sys.stdout.flush()
-    def warning(self, msg): print(f"[YTDLP-WARN] {msg}"); sys.stdout.flush()
-    def error(self, msg): print(f"[YTDLP-ERROR] {msg}"); sys.stdout.flush()
+    def __init__(self):
+        self.logs = []
+    def debug(self, msg): 
+        # Skip debug noise
+        if "debug" in msg.lower(): return
+        self.logs.append(f"[DEBUG] {msg}")
+    def info(self, msg): 
+        self.logs.append(f"[INFO] {msg}")
+    def warning(self, msg): 
+        self.logs.append(f"[WARN] {msg}")
+    def error(self, msg): 
+        self.logs.append(f"[ERROR] {msg}")
 
 # --- HELPER 1: GET METADATA ---
 def get_video_info(youtube_url, cookies_file=None, proxy=None):
+    logger = MyLogger()
     ydl_opts = {
         'quiet': True, 
         'no_warnings': True, 
-        'logger': MyLogger(), 
-        'nocheckcertificate': True
+        'logger': logger, 
+        'nocheckcertificate': True,
+        # Fake a browser user agent
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
     }
     if cookies_file: ydl_opts['cookiefile'] = cookies_file
     if proxy: ydl_opts['proxy'] = proxy
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Return info AND None for error
             return ydl.extract_info(youtube_url, download=False), None
     except Exception as e:
-        # Return None for info AND the error string
-        return None, str(e)
+        return None, f"{str(e)}\n\nLogs:\n" + "\n".join(logger.logs)
 
 # --- HELPER 2: GET STREAM URL (NO DOWNLOAD) ---
 def get_stream_url(youtube_url, format_str, cookies_file=None, proxy=None):
+    logger = MyLogger()
     ydl_opts = {
         'quiet': True, 
         'no_warnings': True, 
         'nocheckcertificate': True, 
-        'ignoreerrors': True, 
-        'logger': MyLogger(), 
-        'format': format_str
+        'ignoreerrors': False, 
+        'logger': logger, 
+        'format': format_str,
+        # Critical: Fake a browser UA to avoid 403 Forbidden on the stream URL
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
     }
     if cookies_file: ydl_opts['cookiefile'] = cookies_file
     if proxy: ydl_opts['proxy'] = proxy
@@ -119,15 +133,12 @@ def get_stream_url(youtube_url, format_str, cookies_file=None, proxy=None):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(youtube_url, download=False)
             
-            # --- FIX: Check if info is None before accessing attributes ---
             if info is None:
-                return None, None, "Failed to extract video info (None returned). This often happens due to geo-restrictions or age-gating. Check if cookies are valid."
+                return None, None, f"Video info returned None. Logs:\n" + "\n".join(logger.logs)
 
-            # Return URL, FPS, and None for error
             return info.get('url', None), info.get('fps', 30), None
     except Exception as e:
-        # Return None, None, and the error string
-        return None, None, str(e)
+        return None, None, f"{str(e)}\n\nLogs:\n" + "\n".join(logger.logs)
 
 # --- HELPER 3: CREATE SLIDESHOW VIDEO ---
 def create_summary_video(image_buffers):
@@ -135,12 +146,9 @@ def create_summary_video(image_buffers):
     temp_dir = tempfile.gettempdir()
     output_path = os.path.join(temp_dir, "summary_slideshow.mp4")
     
-    # Decode the first image to determine dimensions
     first_img = cv2.imdecode(image_buffers[0], cv2.IMREAD_COLOR)
     height, width, layers = first_img.shape
     
-    # cv2.VideoWriter requires a numerical FourCC code, but opencv-python handles string passing usually.
-    # We use 'mp4v' which is widely supported.
     fourcc = cv2.VideoWriter_fourcc(*'mp4v') 
     out = cv2.VideoWriter(output_path, fourcc, 0.5, (width, height)) 
     
@@ -171,7 +179,6 @@ def create_pdf(image_buffers):
         return output_path
     return None
 
-# --- FORMATTING HELPER ---
 def fmt_time(seconds):
     mins, secs = divmod(seconds, 60)
     hours, mins = divmod(mins, 60); 
@@ -186,7 +193,6 @@ if st.button("Check Video 🔎"):
         st.error("Please enter a URL.")
     else:
         with st.spinner("Fetching video formats..."):
-            # Pass proxy and cookies here
             info, error_msg = get_video_info(url, cookies_file=cookies_path, proxy=proxy_url)
             
             if info:
@@ -202,7 +208,7 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
     st.divider()
     col_a, col_b = st.columns([1, 3])
     with col_a:
-        if info.get('thumbnail'): st.image(info['thumbnail'], use_container_width=True) # Fixed width error
+        if info.get('thumbnail'): st.image(info['thumbnail'], use_container_width=True)
     with col_b:
         st.subheader(info.get('title', 'Unknown'))
         duration = info.get('duration', 0)
@@ -213,15 +219,14 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
     formats = info.get('formats', [])
     unique_heights = set()
     for f in formats:
-        # Relaxed filtering: Removed requirement for 'http' protocol to allow more streams
         if f.get('vcodec') != 'none' and f.get('height'): 
             unique_heights.add(f['height'])
     sorted_heights = sorted(unique_heights, reverse=True)
     
     quality_options = {}
     for h in sorted_heights: 
-        # Removed [protocol^=http] to allow HLS/DASH streams which FFmpeg handles well
-        quality_options[f"{h}p (Stream)"] = f"bestvideo[height={h}]"
+        # RELAXED FORMAT: Use <= to find closest match if exact match missing
+        quality_options[f"{h}p (Stream)"] = f"bestvideo[height<={h}]"
     
     quality_options["Best Available (Stream)"] = "bestvideo"
 
@@ -239,9 +244,7 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
     start_btn = col_start.button("Start Live Scan 🚀", type="primary")
     stop_btn = col_stop.button("Stop & Save ⏹️")
 
-    # LOGIC: Start Scan
     if start_btn:
-        # Wrap everything in a try-except to catch generic crashes (OpenCV errors, etc)
         try:
             st.session_state['captured_images'] = []
             
@@ -252,7 +255,6 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
             progress_bar = st.progress(0)
             
             status_text.info(f"🌐 Fetching stream URL via Proxy...")
-            # Pass proxy and cookies here
             stream_url, meta_fps, stream_error = get_stream_url(url, selected_format_str, cookies_path, proxy_url)
             
             if not stream_url:
@@ -260,18 +262,16 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
             else:
                 status_text.info(f"🎥 Connecting to stream...")
                 
-                # --- CRITICAL FIX: FORCE OPENCV TO USE PROXY ---
                 if proxy_url:
                     os.environ['http_proxy'] = proxy_url
                     os.environ['https_proxy'] = proxy_url
                     os.environ['HTTP_PROXY'] = proxy_url
                     os.environ['HTTPS_PROXY'] = proxy_url
                 
-                # Explicitly use FFmpeg backend for Streamlit Cloud/Linux environments
                 cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
                 
                 if not cap.isOpened():
-                    st.error("Error connecting to video stream. OpenCV could not open the URL. Ensure FFmpeg is installed and the proxy allows video streaming.")
+                    st.error("Error connecting to video stream. OpenCV could not open the URL.")
                 else:
                     fps = cap.get(cv2.CAP_PROP_FPS)
                     if fps <= 0 or fps > 120: fps = meta_fps if meta_fps else 30
@@ -281,12 +281,11 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                     end_frame_pos = int(end_val * fps)
                     total_scan_frames = end_frame_pos - current_frame_pos
                     
-                    # Seek to start
                     cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_pos)
                     ret, frame = cap.read()
                     
                     if not ret:
-                        st.error("Stream ended unexpectedly or seek failed immediately. The video format might not be supported by OpenCV/FFmpeg.")
+                        st.error("Stream ended unexpectedly or seek failed immediately.")
                     else:
                         orig_h, orig_w = frame.shape[:2]
                         process_w = 640
@@ -339,7 +338,6 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                         progress_bar.empty()
                         status_text.success(f"✅ Scanning Complete! Found {len(st.session_state['captured_images'])} slides.")
                         
-                # --- CLEANUP PROXY ENV VARS (Optional but good practice) ---
                 if proxy_url:
                     os.environ.pop('http_proxy', None)
                     os.environ.pop('https_proxy', None)
