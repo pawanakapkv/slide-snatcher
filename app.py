@@ -8,7 +8,7 @@ import tempfile
 import sys
 import shutil
 import logging
-from PIL import Image
+# Removed PIL/Image imports as PDF generation is no longer needed
 
 # 1. PAGE CONFIGURATION
 st.set_page_config(page_title="Slide Snatcher", layout="wide")
@@ -17,7 +17,7 @@ st.markdown("Step 1: Download video segment to server. Step 2: Auto-scan for sli
 
 # Check for FFmpeg (Modified: We will try to proceed without it)
 if not shutil.which('ffmpeg'):
-    st.info("ℹ️ FFmpeg not detected. Using **Video Only** mode to avoid merging issues. Segment precision may be lower.")
+    st.info("ℹ️ FFmpeg not detected. Using **Video Only** mode. This works fine for downloading raw video segments.")
 
 # --- SESSION STATE INITIALIZATION ---
 if 'video_info' not in st.session_state:
@@ -72,7 +72,7 @@ class MyLogger:
     def warning(self, msg): self.logs.append(f"[WARN] {msg}")
     def error(self, msg): self.logs.append(f"[ERROR] {msg}")
 
-# --- HELPERS: METADATA & PDF ---
+# --- HELPERS: METADATA ---
 def get_video_info(youtube_url, cookies_file=None, proxy=None):
     logger = MyLogger()
     ydl_opts = {'quiet': True, 'no_warnings': True, 'logger': logger, 'nocheckcertificate': True}
@@ -83,20 +83,6 @@ def get_video_info(youtube_url, cookies_file=None, proxy=None):
             return ydl.extract_info(youtube_url, download=False), None
     except Exception as e:
         return None, f"{str(e)}\n\nLogs:\n" + "\n".join(logger.logs)
-
-def create_pdf(image_buffers):
-    if not image_buffers: return None
-    output_path = os.path.join(tempfile.gettempdir(), "lecture_slides.pdf")
-    pil_images = []
-    for buf in image_buffers:
-        img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
-        if img is None: continue
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        pil_images.append(Image.fromarray(img_rgb))
-    if pil_images:
-        pil_images[0].save(output_path, "PDF", resolution=100.0, save_all=True, append_images=pil_images[1:])
-        return output_path
-    return None
 
 def fmt_time(seconds):
     mins, secs = divmod(seconds, 60)
@@ -206,6 +192,10 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                     file_name = files[0]
                     file_path = os.path.join(tmp_dir, file_name)
                     
+                    # Read the video file bytes for the download button later
+                    with open(file_path, "rb") as f:
+                        video_bytes = f.read()
+
                     # 2. SCANNING LOGIC (Using local file)
                     status_text.info(f"📂 Scanning local file: {file_name}")
                     
@@ -266,36 +256,36 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                                     last_frame_data = gray
                             
                             if found_new_slide:
-                                retval, buffer = cv2.imencode('.jpg', frame)
-                                if retval:
-                                    st.session_state['captured_images'].append(buffer)
-                                
                                 # Correct timestamp: File Time + Original Start Time
                                 current_file_time = current_frame_pos / fps
                                 actual_video_time = current_file_time + start_val
                                 time_str = fmt_time(actual_video_time)
                                 
                                 img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                                st.image(img_rgb, caption=f"Slide #{len(st.session_state['captured_images'])} at {time_str}", channels="RGB")
+                                # Show the detected slide on screen
+                                st.image(img_rgb, caption=f"Found at {time_str}", channels="RGB")
+                                
+                                # Update position
+                                last_frame_data = gray
                                 current_frame_pos += jump_large 
                             else:
                                 current_frame_pos += jump_small
                         
                         cap.release()
                         progress_bar.empty()
-                        status_text.success(f"✅ Scanning Complete! Found {len(st.session_state['captured_images'])} slides.")
+                        status_text.success(f"✅ Scanning Complete!")
+                        
+                        # 3. DOWNLOAD BUTTON (Instead of PDF)
+                        st.divider()
+                        st.subheader("⬇️ Download Segment")
+                        st.download_button(
+                            label=f"Download Video Clip ({file_name})",
+                            data=video_bytes,
+                            file_name=file_name,
+                            mime="application/octet-stream"
+                        )
+
                 else:
                     st.error("Download finished but file not found on server.")
             except Exception as e:
                 st.error(f"Process failed: {e}")
-
-    # --- RESULT DOWNLOADS ---
-    if len(st.session_state.get('captured_images', [])) > 0:
-        st.divider()
-        st.success(f"🎉 **Results Ready:** {len(st.session_state['captured_images'])} Slides Captured")
-        
-        st.subheader("📄 Download PDF")
-        pdf_path = create_pdf(st.session_state['captured_images'])
-        if pdf_path and os.path.exists(pdf_path):
-            with open(pdf_path, "rb") as f:
-                st.download_button("Download PDF", f.read(), "slides.pdf", "application/pdf")
