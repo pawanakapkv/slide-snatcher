@@ -21,6 +21,20 @@ if not shutil.which('ffmpeg'):
     st.warning("⚠️ FFmpeg is not installed or not found in system PATH.")
     st.info("Without FFmpeg, downloads may be limited to 720p, and Audio conversion to MP3 will not work.")
 
+# --------------------------------------------------------------------------
+# PROXY SETUP
+# --------------------------------------------------------------------------
+# Retrieve proxy from Streamlit secrets
+proxy_url = None
+if "proxy_url" in st.secrets:
+    proxy_url = st.secrets["proxy_url"]
+else:
+    st.warning("⚠️ No proxy found in secrets! If running in cloud/production, downloads will likely fail due to IP blocking.")
+
+# --------------------------------------------------------------------------
+# APP LOGIC
+# --------------------------------------------------------------------------
+
 st.markdown("Enter a YouTube URL below to download video or audio.")
 
 # Initialize session state to store video info between re-runs
@@ -44,8 +58,15 @@ if st.button("Fetch Info"):
     else:
         with st.spinner("Fetching video information..."):
             try:
-                ydl_opts = {'quiet': True, 'no_warnings': True}
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                # Basic options for fetching metadata
+                ydl_opts_info = {
+                    'quiet': True, 
+                    'no_warnings': True,
+                    # Apply Proxy if available
+                    'proxy': proxy_url, 
+                }
+                
+                with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
                     info = ydl.extract_info(url, download=False)
                     st.session_state.video_info = info
             except Exception as e:
@@ -93,7 +114,7 @@ if st.session_state.video_info:
     selected_label = st.selectbox("Select Quality", list(quality_options.keys()))
     
     # Download Path (Local System)
-    # Note: Since this is a local tool running via Streamlit, we can write to local disk.
+    # Note: If running on Cloud, this defaults to the ephemeral container storage
     default_path = os.getcwd()
     download_path = st.text_input("Save to folder:", value=default_path)
     
@@ -109,7 +130,6 @@ if st.session_state.video_info:
                 if d['status'] == 'downloading':
                     try:
                         p = d.get('_percent_str', '0%').replace('%', '')
-                        # Handle cases where percentage might be 'N/A'
                         if p and p != 'N/A':
                             progress = float(p) / 100
                             progress_bar.progress(min(progress, 1.0))
@@ -136,15 +156,24 @@ if st.session_state.video_info:
                     'preferredquality': '192',
                 }]
             
+            # ------------------------------------------------------------------
+            # FINAL DOWNLOAD OPTIONS
+            # ------------------------------------------------------------------
             ydl_opts = {
                 'format': format_str,
                 'outtmpl': os.path.join(download_path, '%(title)s.%(ext)s'),
                 'progress_hooks': [progress_hook],
                 'postprocessors': postprocessors,
+                # THIS IS THE KEY FIX:
+                'proxy': proxy_url, 
             }
             
             # Start Download
             try:
+                # Debug message (optional, remove in final production)
+                if proxy_url:
+                    st.info(f"Connecting via Proxy: {proxy_url.split('@')[1]}")
+
                 with st.spinner("Starting download..."):
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         ydl.download([url])
