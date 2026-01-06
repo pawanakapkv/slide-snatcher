@@ -2,6 +2,7 @@ import streamlit as st
 import os
 import sys
 import shutil
+import tempfile
 
 # Try to import yt_dlp
 try:
@@ -37,6 +38,20 @@ else:
 
 st.markdown("Enter a YouTube URL below to download video or audio.")
 
+# --- ADDED: Cookie Uploader for Authentication ---
+with st.expander("🔓 Authentication (Cookies) - Required for 'Sign in' errors"):
+    st.info("If you get a 'Sign in to confirm you’re not a bot' error, upload your `cookies.txt` file here.")
+    st.markdown("[How to get cookies.txt?](https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp)")
+    cookies_file = st.file_uploader("Upload cookies.txt", type=["txt", "text"])
+
+# Handle Cookie File
+cookie_path = None
+if cookies_file:
+    # Save uploaded file to a temporary file so yt-dlp can read it
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.txt', mode='wb') as fp:
+        fp.write(cookies_file.getvalue())
+        cookie_path = fp.name
+
 # Initialize session state to store video info between re-runs
 if 'video_info' not in st.session_state:
     st.session_state.video_info = None
@@ -63,7 +78,9 @@ if st.button("Fetch Info"):
                     'quiet': True, 
                     'no_warnings': True,
                     # Apply Proxy if available
-                    'proxy': proxy_url, 
+                    'proxy': proxy_url,
+                    # Apply Cookies if available
+                    'cookiefile': cookie_path,
                 }
                 
                 with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
@@ -119,6 +136,18 @@ if st.session_state.video_info:
     download_path = st.text_input("Save to folder:", value=default_path)
     
     if st.button("Download Now", type="primary"):
+        # ------------------------------------------------------------------
+        # FOLDER CHECK & CREATION
+        # ------------------------------------------------------------------
+        # Instead of erroring, we now try to create the folder if it's missing
+        if not os.path.exists(download_path):
+            try:
+                os.makedirs(download_path, exist_ok=True)
+                st.info(f"📁 Created new download folder: {download_path}")
+            except Exception as e:
+                st.error(f"❌ Could not create folder: {e}")
+                st.stop()
+
         if not os.path.isdir(download_path):
             st.error("Invalid download path. Please check the folder location.")
         else:
@@ -164,8 +193,8 @@ if st.session_state.video_info:
                 'outtmpl': os.path.join(download_path, '%(title)s.%(ext)s'),
                 'progress_hooks': [progress_hook],
                 'postprocessors': postprocessors,
-                # THIS IS THE KEY FIX:
                 'proxy': proxy_url, 
+                'cookiefile': cookie_path, # Passed the cookie path here
             }
             
             # Start Download
@@ -173,6 +202,8 @@ if st.session_state.video_info:
                 # Debug message (optional, remove in final production)
                 if proxy_url:
                     st.info(f"Connecting via Proxy: {proxy_url.split('@')[1]}")
+                if cookie_path:
+                    st.info("Using uploaded cookies.txt for authentication")
 
                 with st.spinner("Starting download..."):
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
