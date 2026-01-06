@@ -10,10 +10,11 @@ from PIL import Image
 # 1. PAGE CONFIGURATION
 st.set_page_config(page_title="Slide Snatcher", layout="wide")
 st.title("📸 YouTube Slide Snatcher")
-st.markdown("Step 1: Download video (Muted). Step 2: Auto-scan for slides.")
+st.markdown("Step 1: Download video segment. Step 2: Auto-scan for slides.")
 
-# NOTE: FFmpeg check removed as per request. 
-# We will use video-only streams and OpenCV seeking to avoid FFmpeg dependency.
+# Check for FFmpeg
+if not shutil.which('ffmpeg'):
+    st.warning("⚠️ FFmpeg is not installed. Video processing might fail.")
 
 # --- SESSION STATE INITIALIZATION ---
 if 'video_info' not in st.session_state:
@@ -158,7 +159,7 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
     st.divider()
     col_a, col_b = st.columns([1, 3])
     with col_a:
-        if info.get('thumbnail'): st.image(info['thumbnail'], width="stretch")
+        if info.get('thumbnail'): st.image(info['thumbnail'], use_container_width=True)
     with col_b:
         st.subheader(info.get('title', 'Unknown'))
         duration = info.get('duration', 0)
@@ -166,71 +167,48 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
         st.write(f"**Uploader:** {info.get('uploader', 'Unknown')}")
     
     # --- QUALITY SELECTION ---
-    st.subheader("2. Select Quality (Video Only)")
-    st.caption("ℹ️ Audio will be muted to allow downloading without FFmpeg.")
-    
+    st.subheader("2. Select Quality")
     formats = info.get('formats', [])
     unique_heights = set()
     for f in formats:
-        # Filter: We strictly want video streams.
         if f.get('vcodec') != 'none' and f.get('height'): 
             unique_heights.add(f['height'])
     sorted_heights = sorted(unique_heights, reverse=True)
     
     quality_options = {}
     for h in sorted_heights: 
-        # STRICTLY request bestvideo only to avoid ffmpeg merging
-        quality_options[f"{h}p"] = f"bestvideo[height<={h}]"
-    quality_options["Best Available"] = "bestvideo"
+        quality_options[f"{h}p"] = f"bestvideo[height<={h}]+bestaudio/best[height<={h}]"
+    quality_options["Best Available"] = "bestvideo+bestaudio/best"
     
     selected_q_label = st.selectbox("Choose quality:", list(quality_options.keys()))
 
     # --- TIME RANGE SELECTION ---
     st.subheader("3. Select Time Range to Scan")
     start_val, end_val = st.slider("Drag sliders to select scan range:", min_value=0, max_value=duration, value=(0, duration), format="mm:ss")
-    st.info(f"⏱️ **No FFmpeg Mode:** The entire video stream will be downloaded, but the scanner will automatically skip to **{fmt_time(start_val)}** and stop at **{fmt_time(end_val)}**.")
+    st.info(f"⏱️ Will download and scan only from **{fmt_time(start_val)}** to **{fmt_time(end_val)}**")
     
     if st.button("Download & Scan 🚀", type="primary"):
         st.session_state['captured_images'] = []
+        progress_bar = st.progress(0)
+        status_text = st.empty()
         
-        # --- UI ELEMENTS FOR PROGRESS ---
-        st.write("### ⬇️ Downloading Video Stream...")
-        download_progress_bar = st.progress(0)
-        download_status_text = st.empty()
-        
-        # Hook for yt_dlp
         def progress_hook(d):
             if d['status'] == 'downloading':
                 try:
-                    # Calculate percentage based on bytes if available
-                    total = d.get('total_bytes') or d.get('total_bytes_estimate')
-                    downloaded = d.get('downloaded_bytes', 0)
-                    
-                    if total:
-                        percent = downloaded / total
-                        download_progress_bar.progress(min(percent, 1.0))
-                        
-                        # Format status string
-                        eta = d.get('eta', 0)
-                        speed = d.get('speed', 0)
-                        speed_str = f"{speed/1024/1024:.1f} MB/s" if speed else "N/A"
-                        download_status_text.text(f"Downloaded: {percent:.1%} | Speed: {speed_str} | ETA: {eta}s")
-                    else:
-                        # Fallback to string parsing if bytes are missing
-                        p_str = d.get('_percent_str', '0%').replace('%', '')
-                        download_status_text.text(f"Downloading... {p_str}%")
-                        
-                except Exception as e:
-                    pass
+                    p = d.get('_percent_str', '0%').replace('%', '')
+                    if p and p != 'N/A':
+                        progress_bar.progress(min(float(p) / 100, 1.0))
+                    status_text.text(f"Downloading: {d.get('_percent_str')} - ETA: {d.get('_eta_str')}")
+                except: pass
             elif d['status'] == 'finished':
-                download_progress_bar.progress(1.0)
-                download_status_text.success("✅ Download complete! Starting processing...")
+                progress_bar.progress(1.0)
+                status_text.text("Download complete. Starting Scan...")
 
         # Setup Options
         format_str = quality_options[selected_q_label]
         
-        # NOTE: download_range_func removed. 
-        # Without FFmpeg, we must download the continuous stream and handle seeking in OpenCV.
+        def download_range_func(info_dict, ydl):
+            return [{'start_time': start_val, 'end_time': end_val}]
 
         # Temporary Directory for Download & Scan
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -239,29 +217,31 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                 'outtmpl': os.path.join(tmp_dir, '%(title)s.%(ext)s'),
                 'progress_hooks': [progress_hook],
                 'proxy': proxy_url,
-                'cookiefile': cookies_path, 
+                'cookiefile': cookies_path, # Uses uploaded file or secret
                 'quiet': True,
                 'no_warnings': True,
-                # 'download_ranges': Removed to avoid ffmpeg
-                # 'force_keyframes_at_cuts': Removed to avoid ffmpeg
+                'download_ranges': download_range_func,
+                'force_keyframes_at_cuts': True,
+                # FIXED: Options to avoid blocking
                 'nocheckcertificate': True,
                 'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             }
 
             try:
                 # 1. DOWNLOAD
-                try:
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        ydl.download([url])
-                except Exception as e:
-                    # FALLBACK
-                    if "cookie" in str(e).lower() or "Sign in" in str(e):
-                        st.warning("⚠️ Cookie auth failed. Retrying without cookies...")
-                        if 'cookiefile' in ydl_opts: del ydl_opts['cookiefile']
+                with st.spinner("Downloading video segment to server..."):
+                    try:
                         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                             ydl.download([url])
-                    else:
-                        raise e
+                    except Exception as e:
+                        # FALLBACK: If cookies failed, try without them
+                        if "cookie" in str(e).lower() or "Sign in" in str(e):
+                            st.warning("⚠️ Cookie auth failed. Retrying without cookies...")
+                            if 'cookiefile' in ydl_opts: del ydl_opts['cookiefile']
+                            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                                ydl.download([url])
+                        else:
+                            raise e
                 
                 # Check file
                 files = os.listdir(tmp_dir)
@@ -269,13 +249,8 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                     file_name = files[0]
                     file_path = os.path.join(tmp_dir, file_name)
                     
-                    # 2. SCANNING LOGIC
-                    st.divider()
-                    st.write("### 👁️ Scanning for Slides...")
-                    scan_progress_bar = st.progress(0)
-                    scan_status_text = st.empty()
-                    
-                    scan_status_text.info(f"📂 Processing file: {file_name}")
+                    # 2. SCANNING LOGIC (Using local file)
+                    status_text.info(f"📂 Scanning local file: {file_name}")
                     
                     cap = cv2.VideoCapture(file_path)
                     if not cap.isOpened():
@@ -285,19 +260,11 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                         if fps <= 0: fps = 30
                         
                         last_frame_data = None
+                        current_frame_pos = 0 
+                        total_frames_in_file = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                        end_frame_pos = total_frames_in_file
                         
-                        # --- FRAME CALCULATION FOR RANGE ---
-                        start_frame_idx = int(start_val * fps)
-                        end_frame_idx = int(end_val * fps)
-                        total_frames_in_video = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                        
-                        # Clamp end frame
-                        if end_frame_idx > total_frames_in_video:
-                            end_frame_idx = total_frames_in_video
-                            
-                        # Set initial Position
-                        current_frame_pos = start_frame_idx
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_pos)
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                         
                         orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                         orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -308,21 +275,16 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                         jump_small = int(fps * min_skip)
                         jump_large = int(fps * max_skip)
                         
+                        st.divider()
                         st.subheader("Results")
                         
-                        # Process only the requested range
-                        while current_frame_pos < end_frame_idx:
-                            # We must manually set pos if we are jumping frames
+                        while current_frame_pos < end_frame_pos:
                             cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_pos)
-                            
                             ret, frame = cap.read()
                             if not ret: break
                             
-                            # Update Scan Progress (Relative to selected range)
-                            range_len = end_frame_idx - start_frame_idx
-                            if range_len > 0:
-                                progress_val = (current_frame_pos - start_frame_idx) / range_len
-                                scan_progress_bar.progress(min(progress_val, 1.0))
+                            if total_frames_in_file > 0:
+                                progress_bar.progress(min(current_frame_pos / total_frames_in_file, 1.0))
                                 
                             small_frame = cv2.resize(frame, (process_w, process_h))
                             gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
@@ -344,9 +306,9 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                                 if retval:
                                     st.session_state['captured_images'].append(buffer)
                                 
-                                # Timestamp logic: Since we have the full video, 
-                                # current_frame_pos / fps IS the actual time.
-                                actual_video_time = current_frame_pos / fps
+                                # Correct timestamp: File Time + Original Start Time
+                                current_file_time = current_frame_pos / fps
+                                actual_video_time = current_file_time + start_val
                                 time_str = fmt_time(actual_video_time)
                                 
                                 img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -356,8 +318,8 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                                 current_frame_pos += jump_small
                         
                         cap.release()
-                        scan_progress_bar.progress(1.0)
-                        scan_status_text.success(f"✅ Scanning Complete! Found {len(st.session_state['captured_images'])} slides.")
+                        progress_bar.empty()
+                        status_text.success(f"✅ Scanning Complete! Found {len(st.session_state['captured_images'])} slides.")
                 else:
                     st.error("Download finished but file not found on server.")
             except Exception as e:
