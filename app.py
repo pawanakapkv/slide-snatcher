@@ -101,8 +101,7 @@ def get_video_info(youtube_url, cookies_file=None, proxy=None):
         'no_warnings': True, 
         'logger': logger, 
         'nocheckcertificate': True,
-        # Fake a browser user agent
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        # REMOVED fake user_agent to prevent signature mismatch with OpenCV
     }
     if cookies_file: ydl_opts['cookiefile'] = cookies_file
     if proxy: ydl_opts['proxy'] = proxy
@@ -123,8 +122,8 @@ def get_stream_url(youtube_url, format_str, cookies_file=None, proxy=None):
         'ignoreerrors': False, 
         'logger': logger, 
         'format': format_str,
-        # Critical: Fake a browser UA to avoid 403 Forbidden on the stream URL
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        # REMOVED fake user_agent to prevent signature mismatch with OpenCV
+        # 'user_agent': 'Mozilla/5.0 ...', 
     }
     if cookies_file: ydl_opts['cookiefile'] = cookies_file
     if proxy: ydl_opts['proxy'] = proxy
