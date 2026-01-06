@@ -26,60 +26,39 @@ if 'url_input' not in st.session_state:
     st.session_state['url_input'] = ""
 if 'captured_images' not in st.session_state:
     st.session_state['captured_images'] = []
-if 'ready_segment' not in st.session_state:
-    st.session_state['ready_segment'] = None
 
 # --------------------------------------------------------------------------
-# PROXY & AUTHENTICATION SETUP
+# PROXY & AUTHENTICATION SETUP (FROM SECRETS)
 # --------------------------------------------------------------------------
-# Load Proxy from Secrets
 proxy_url = None
 if "proxy_url" in st.secrets:
     proxy_url = st.secrets["proxy_url"]
-elif "PROXY_URL" in st.secrets:
-    proxy_url = st.secrets["PROXY_URL"]
 else:
-    pass
+    st.warning("⚠️ No 'proxy_url' found in secrets! Downloads might fail.")
 
-# Load Cookies from Secrets (Default)
-secret_cookies_path = None
-if "cookies" in st.secrets:
+@st.cache_resource
+def setup_cookies_file():
+    if "cookies" not in st.secrets:
+        st.warning("⚠️ No 'cookies' found in secrets!")
+        return None
     try:
         cookies_content = st.secrets["cookies"]
         fp = tempfile.NamedTemporaryFile(delete=False, suffix='.txt', mode='w', encoding='utf-8')
         fp.write(cookies_content)
         fp.close()
-        secret_cookies_path = fp.name
+        return fp.name
     except Exception as e:
-        st.error(f"Error setting up secret cookies: {e}")
+        st.error(f"Error setting up cookies: {e}")
+        return None
+
+cookies_path = setup_cookies_file()
 
 # 2. SIDEBAR SETTINGS
 with st.sidebar:
     st.header("⚙️ Settings")
-    
-    st.subheader("🍪 Authentication")
-    st.markdown("Upload `cookies.txt` to bypass age restrictions. (Overrides secrets)")
-    uploaded_cookies = st.file_uploader("Upload cookies.txt", type=['txt'])
-    
-    # LOGIC: Use Uploaded if exists, else use Secret, else None
-    cookies_path = secret_cookies_path
-    if uploaded_cookies:
-        try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.txt', mode='wb') as fp:
-                fp.write(uploaded_cookies.getvalue())
-                cookies_path = fp.name
-            st.success("✅ Uploaded cookies loaded")
-        except Exception as e:
-            st.error(f"Error loading uploaded cookies: {e}")
-    elif secret_cookies_path:
-        st.info("ℹ️ Using cookies from secrets")
-
-    st.divider()
-    
     st.subheader("🔍 Detection Settings")
     sensitivity = st.slider("Color Sensitivity", min_value=10, max_value=100, value=35, help="Higher = less sensitive to small color changes")
     strictness = st.slider("Strictness (%)", min_value=0.1, max_value=100.0, value=1.0, step=0.1, help="Percentage of screen that must change to trigger a capture")
-    
     st.divider()
     st.info("💡 **Speed Tip:** Adjust jump intervals")
     min_skip = st.slider("Min Jump (Seconds)", 1, 5, 2)
@@ -96,54 +75,18 @@ class MyLogger:
 # --- HELPERS: METADATA & PDF ---
 def get_video_info(youtube_url, cookies_file=None, proxy=None):
     logger = MyLogger()
-    
-    # Define fallback strategies for Metadata Fetching
-    strategies = [
-        # Strategy 1: iOS (Often most robust on servers)
-        {'extractor_args': {'youtube': {'player_client': ['ios']}}},
-        # Strategy 2: Android
-        {'extractor_args': {'youtube': {'player_client': ['android']}}},
-        # Strategy 3: Web (Standard)
-        {'extractor_args': {'youtube': {'player_client': ['web']}}},
-        # Strategy 4: TV (Very permissive, good fallback)
-        {'extractor_args': {'youtube': {'player_client': ['tv']}}},
-        # Strategy 5: Default (Let yt-dlp decide)
-        {}
-    ]
-    
-    last_error = None
-    
-    for i, strat in enumerate(strategies):
-        ydl_opts = {
-            'quiet': True, 
-            'no_warnings': True, 
-            'logger': logger, 
-            'nocheckcertificate': True,
-        }
-        
-        # Apply strategy args
-        if 'extractor_args' in strat:
-            ydl_opts['extractor_args'] = strat['extractor_args']
-            
-        if cookies_file: 
-            ydl_opts['cookiefile'] = cookies_file
-        if proxy: 
-            ydl_opts['proxy'] = proxy
-            
-        try:
-            # st.toast(f"Trying Metadata Strategy {i+1}...") # Optional: Debug feedback
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                return ydl.extract_info(youtube_url, download=False), None
-        except Exception as e:
-            last_error = e
-            continue # Try next strategy
-
-    # If all fail
-    return None, f"All strategies failed. Last error: {str(last_error)}\n\nLogs:\n" + "\n".join(logger.logs)
+    ydl_opts = {'quiet': True, 'no_warnings': True, 'logger': logger, 'nocheckcertificate': True}
+    if cookies_file: ydl_opts['cookiefile'] = cookies_file
+    if proxy: ydl_opts['proxy'] = proxy
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            return ydl.extract_info(youtube_url, download=False), None
+    except Exception as e:
+        return None, f"{str(e)}\n\nLogs:\n" + "\n".join(logger.logs)
 
 def create_pdf(image_buffers):
     if not image_buffers: return None
-    output_path = os.path.join(tempfile.gettempdir(), f"slides_{os.urandom(4).hex()}.pdf")
+    output_path = os.path.join(tempfile.gettempdir(), "lecture_slides.pdf")
     pil_images = []
     for buf in image_buffers:
         img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
@@ -173,8 +116,6 @@ if st.button("Fetch Info 🔎"):
             if info:
                 st.session_state['video_info'] = info
                 st.session_state['url_input'] = url 
-                st.session_state['ready_segment'] = None
-                st.session_state['captured_images'] = []
                 st.rerun() 
             else:
                 st.error(f"❌ Could not find video. Error details:\n\n{error_msg}")
@@ -188,7 +129,9 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
         if info.get('thumbnail'): st.image(info['thumbnail'], use_container_width=True)
     with col_b:
         st.subheader(info.get('title', 'Unknown'))
-        st.caption(f"**Duration:** {fmt_time(info.get('duration', 0))} | **Uploader:** {info.get('uploader', 'Unknown')}")
+        duration = info.get('duration', 0)
+        st.write(f"**Duration:** {fmt_time(duration)}")
+        st.write(f"**Uploader:** {info.get('uploader', 'Unknown')}")
     
     # --- QUALITY SELECTION ---
     st.subheader("2. Select Quality")
@@ -208,15 +151,10 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
 
     # --- TIME RANGE SELECTION ---
     st.subheader("3. Select Time Range to Scan")
-    duration = info.get('duration', 100)
-    start_val, end_val = st.slider("Drag sliders to select scan range:", min_value=0, max_value=duration, value=(0, min(duration, 300)), format="mm:ss")
+    start_val, end_val = st.slider("Drag sliders to select scan range:", min_value=0, max_value=duration, value=(0, duration), format="mm:ss")
     st.info(f"⏱️ Will download and scan only from **{fmt_time(start_val)}** to **{fmt_time(end_val)}**")
     
-    col_btn1, col_btn2 = st.columns(2)
-    start_scan = col_btn1.button("Download & Scan 🚀", type="primary")
-    dl_video_only = col_btn2.button("Download Clip Only 📥")
-
-    if start_scan or dl_video_only:
+    if st.button("Download & Scan 🚀", type="primary"):
         st.session_state['captured_images'] = []
         progress_bar = st.progress(0)
         status_text = st.empty()
@@ -231,101 +169,74 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                 except: pass
             elif d['status'] == 'finished':
                 progress_bar.progress(1.0)
-                status_text.text("Download complete. Processing...")
+                status_text.text("Download complete. Starting Scan...")
 
-        # Base strategy options
+        # Setup Options
         format_str = quality_options[selected_q_label]
         
-        # DEFINE STRATEGIES to ensure download succeeds
-        # We cycle through these until one works
-        strategies = [
-            # 1. Preferred: User selection, iOS client (Robust)
-            {'format': format_str, 'args': {'youtube': {'player_client': ['ios']}}},
-            # 2. Preferred: User selection, Android client
-            {'format': format_str, 'args': {'youtube': {'player_client': ['android']}}},
-            # 3. Fallback: 'Best', iOS
-            {'format': 'best', 'args': {'youtube': {'player_client': ['ios']}}},
-            # 4. Fallback: 'Best', Android
-            {'format': 'best', 'args': {'youtube': {'player_client': ['android']}}},
-            # 5. Fallback: 'Best', TV (Very robust but might be lower quality UI)
-            {'format': 'best', 'args': {'youtube': {'player_client': ['tv']}}},
-            # 6. Fallback: 'Best', Web
-            {'format': 'best', 'args': {'youtube': {'player_client': ['web']}}},
-             # 7. Last Resort: 'Worst' (Just get the file)
-            {'format': 'worst', 'args': {}}
-        ]
+        # --- DOWNLOAD RANGES CALLBACK ---
+        def download_range_func(info_dict, ydl):
+            return [{'start_time': start_val, 'end_time': end_val}]
 
+        # Temporary Directory for Download & Scan
         with tempfile.TemporaryDirectory() as tmp_dir:
-            success = False
-            last_error = None
-            
-            with st.spinner("Downloading video segment (attempting multiple strategies)..."):
-                for i, strategy in enumerate(strategies):
-                    try:
-                        status_text.text(f"Attempt {i+1}/{len(strategies)}: {strategy.get('format')} using {list(strategy['args'].get('youtube',{}).values())[0] if 'youtube' in strategy['args'] else 'default'}...")
-                        
-                        ydl_opts = {
-                            'format': strategy['format'],
-                            'outtmpl': os.path.join(tmp_dir, '%(title)s.%(ext)s'),
-                            'progress_hooks': [progress_hook],
-                            'cookiefile': cookies_path,
-                            'quiet': True,
-                            'no_warnings': True,
-                            'download_ranges': lambda _, __: [{'start_time': start_val, 'end_time': end_val}],
-                            'force_keyframes_at_cuts': True,
-                            'extractor_args': strategy['args']
-                        }
-                        
-                        if proxy_url: ydl_opts['proxy'] = proxy_url
+            ydl_opts = {
+                'format': format_str,
+                'outtmpl': os.path.join(tmp_dir, '%(title)s.%(ext)s'),
+                'progress_hooks': [progress_hook],
+                'proxy': proxy_url,
+                'cookiefile': cookies_path,
+                'quiet': True,
+                'no_warnings': True,
+                # Add download ranges to download only the specific segment
+                'download_ranges': download_range_func,
+                'force_keyframes_at_cuts': True, 
+            }
 
-                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                            ydl.download([url])
-                        
-                        # Verify file exists
-                        if len(os.listdir(tmp_dir)) > 0:
-                            success = True
-                            break # Exit loop if successful
-                            
-                    except Exception as e:
-                        last_error = e
-                        continue
-            
-            if success:
+            try:
+                # 1. DOWNLOAD
+                with st.spinner("Downloading video segment to server..."):
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        ydl.download([url])
+                
+                # Check file
                 files = os.listdir(tmp_dir)
-                file_name = files[0]
-                file_path = os.path.join(tmp_dir, file_name)
-                
-                # Store video for download if requested
-                if dl_video_only:
-                    with open(file_path, "rb") as f:
-                            st.session_state['ready_segment'] = {'name': file_name, 'data': f.read()}
-                    status_text.success("✅ Video segment ready below!")
-                
-                # 2. SCANNING LOGIC
-                elif start_scan:
+                if files:
+                    file_name = files[0]
+                    file_path = os.path.join(tmp_dir, file_name)
+                    
+                    # 2. SCANNING LOGIC (Using local file)
                     status_text.info(f"📂 Scanning local file: {file_name}")
+                    
                     cap = cv2.VideoCapture(file_path)
                     if not cap.isOpened():
                         st.error("Error opening downloaded video file.")
                     else:
-                        fps = cap.get(cv2.CAP_PROP_FPS) or 30
-                        total_frames_in_file = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                        fps = cap.get(cv2.CAP_PROP_FPS)
+                        if fps <= 0: fps = 30
                         
-                        # Scan loop
-                        current_frame_pos = 0
+                        last_frame_data = None
+                        
+                        # Since we downloaded ONLY the segment, the file starts at 0:00
+                        # which corresponds to 'start_val' in the original video.
+                        current_frame_pos = 0 
+                        
+                        # We scan the entire downloaded clip
+                        total_frames_in_file = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
                         end_frame_pos = total_frames_in_file
+                        
+                        # Set initial position (start of the file)
                         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                         
+                        # Image processing vars
                         orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                         orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                         process_w = 640
                         process_h = int(process_w * (orig_h / orig_w)) if orig_w > 0 else 360
-                        
-                        motion_threshold_score = int((process_w * process_h) * (strictness / 100) * 255)
+                        total_pixel_count = process_w * process_h
+                        motion_threshold_score = int(total_pixel_count * (strictness / 100) * 255)
                         jump_small = int(fps * min_skip)
                         jump_large = int(fps * max_skip)
-                        
-                        last_frame_data = None
                         
                         st.divider()
                         st.subheader("Results")
@@ -337,7 +248,7 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                             
                             if total_frames_in_file > 0:
                                 progress_bar.progress(min(current_frame_pos / total_frames_in_file, 1.0))
-                            
+                                
                             small_frame = cv2.resize(frame, (process_w, process_h))
                             gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
                             gray = cv2.GaussianBlur(gray, (21, 21), 0)
@@ -357,28 +268,27 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                                 retval, buffer = cv2.imencode('.jpg', frame)
                                 if retval:
                                     st.session_state['captured_images'].append(buffer)
-                                    
-                                    current_file_time = current_frame_pos / fps
-                                    actual_video_time = current_file_time + start_val
-                                    
-                                    img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                                    st.image(img_rgb, caption=f"Slide #{len(st.session_state['captured_images'])} at {fmt_time(actual_video_time)}", channels="RGB")
-                                    current_frame_pos += jump_large 
+                                
+                                # Correct timestamp: File Time + Original Start Time
+                                current_file_time = current_frame_pos / fps
+                                actual_video_time = current_file_time + start_val
+                                time_str = fmt_time(actual_video_time)
+                                
+                                img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                                st.image(img_rgb, caption=f"Slide #{len(st.session_state['captured_images'])} at {time_str}", channels="RGB")
+                                current_frame_pos += jump_large 
                             else:
                                 current_frame_pos += jump_small
                         
                         cap.release()
                         progress_bar.empty()
                         status_text.success(f"✅ Scanning Complete! Found {len(st.session_state['captured_images'])} slides.")
-
-            else:
-                st.error(f"Download failed after all attempts. Last error: {last_error}")
+                else:
+                    st.error("Download finished but file not found on server.")
+            except Exception as e:
+                st.error(f"Process failed: {e}")
 
     # --- RESULT DOWNLOADS ---
-    if st.session_state.get('ready_segment'):
-        d = st.session_state['ready_segment']
-        st.download_button(f"💾 Save Video Segment", d['data'], d['name'], "video/mp4")
-
     if len(st.session_state.get('captured_images', [])) > 0:
         st.divider()
         st.success(f"🎉 **Results Ready:** {len(st.session_state['captured_images'])} Slides Captured")
