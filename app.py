@@ -67,7 +67,9 @@ cookies_content = """
 @st.cache_resource
 def setup_cookies_file():
     try:
+        # Create a temp file that persists for the session
         fp = tempfile.NamedTemporaryFile(delete=False, suffix='.txt', mode='w', encoding='utf-8')
+        # FIX: Strip the leading newline so the file starts with '# Netscape...'
         fp.write(cookies_content.strip())
         fp.close()
         return fp.name
@@ -244,7 +246,7 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
     if process_dl_btn:
         st.session_state['captured_images'] = []
         with tempfile.TemporaryDirectory() as tmp_dir:
-            # MODIFIED: Android client, no cookies, no manual UA
+            # MODIFIED: Removed manual user_agent, adjusted clients
             ydl_opts = {
                 'format': format_str,
                 'outtmpl': os.path.join(tmp_dir, '%(title)s.%(ext)s'),
@@ -253,7 +255,9 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                 'quiet': True,
                 'no_warnings': True,
                 'download_ranges': download_range_func,
-                'extractor_args': {'youtube': {'player_client': ['android', 'ios']}},
+                # MODIFIED: Use iOS client + User Agent
+                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'extractor_args': {'youtube': {'player_client': ['ios', 'web']}},
             }
             try:
                 with st.spinner("Downloading video segment..."):
@@ -297,7 +301,7 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                 status_text.text("Download complete. Starting Scan...")
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            # MODIFIED: Android client, no cookies, no manual UA
+            # MODIFIED: Removed manual user_agent, adjusted clients
             ydl_opts = {
                 'format': format_str,
                 'outtmpl': os.path.join(tmp_dir, '%(title)s.%(ext)s'),
@@ -307,7 +311,9 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                 'quiet': True,
                 'no_warnings': True,
                 'download_ranges': download_range_func,
-                'extractor_args': {'youtube': {'player_client': ['android', 'ios']}},
+                # MODIFIED: Use iOS client + User Agent
+                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'extractor_args': {'youtube': {'player_client': ['ios', 'web']}},
             }
 
             try:
