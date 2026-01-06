@@ -15,9 +15,9 @@ st.set_page_config(page_title="Slide Snatcher", layout="wide")
 st.title("📸 YouTube Slide Snatcher (Download & Scan Mode)")
 st.markdown("Step 1: Download video segment to server. Step 2: Auto-scan for slides.")
 
-# Check for FFmpeg
+# Check for FFmpeg (Modified: We will try to proceed without it)
 if not shutil.which('ffmpeg'):
-    st.warning("⚠️ FFmpeg is not installed. Video processing might fail.")
+    st.info("ℹ️ FFmpeg not detected. Using **Video Only** mode to avoid merging issues. Segment precision may be lower.")
 
 # --- SESSION STATE INITIALIZATION ---
 if 'video_info' not in st.session_state:
@@ -134,7 +134,7 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
         st.write(f"**Uploader:** {info.get('uploader', 'Unknown')}")
     
     # --- QUALITY SELECTION ---
-    st.subheader("2. Select Quality")
+    st.subheader("2. Select Quality (Video Only)")
     formats = info.get('formats', [])
     unique_heights = set()
     for f in formats:
@@ -144,8 +144,9 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
     
     quality_options = {}
     for h in sorted_heights: 
-        quality_options[f"{h}p"] = f"bestvideo[height<={h}]+bestaudio/best[height<={h}]"
-    quality_options["Best Available"] = "bestvideo+bestaudio/best"
+        # MODIFIED: Video Only to avoid FFmpeg dependency for merging
+        quality_options[f"{h}p"] = f"bestvideo[height<={h}]"
+    quality_options["Best Available"] = "bestvideo"
     
     selected_q_label = st.selectbox("Choose quality:", list(quality_options.keys()))
 
@@ -190,12 +191,12 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                 'no_warnings': True,
                 # Add download ranges to download only the specific segment
                 'download_ranges': download_range_func,
-                'force_keyframes_at_cuts': True, 
+                # Removed force_keyframes_at_cuts since we are avoiding ffmpeg dependencies
             }
 
             try:
                 # 1. DOWNLOAD
-                with st.spinner("Downloading video segment to server..."):
+                with st.spinner("Downloading video segment to server (Video Only)..."):
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         ydl.download([url])
                 
