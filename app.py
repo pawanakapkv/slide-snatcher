@@ -6,6 +6,7 @@ import numpy as np
 import os
 import tempfile
 import sys
+import shutil
 from PIL import Image
 
 # 1. PAGE CONFIGURATION
@@ -24,9 +25,28 @@ if 'url_input' not in st.session_state:
 # --- ADSTERRA CONFIGURATION ---
 ADSTERRA_DIRECT_LINK = "https://www.google.com" # REPLACE THIS
 
+# --- HELPER: SYSTEM CHECK ---
+def check_dependencies():
+    missing = []
+    if not shutil.which("ffmpeg"):
+        missing.append("ffmpeg")
+    # Check for node or nodejs (Debian sometimes names it nodejs)
+    if not (shutil.which("node") or shutil.which("nodejs")):
+        missing.append("nodejs")
+    return missing
+
 # 2. SIDEBAR SETTINGS
 with st.sidebar:
     st.header("⚙️ Settings")
+
+    # DEPENDENCY STATUS CHECK
+    missing_deps = check_dependencies()
+    if missing_deps:
+        st.error(f"❌ Missing System Dependencies: {', '.join(missing_deps)}")
+        st.markdown("Please ensure **packages.txt** contains these exact lines and **Reboot** the app:")
+        st.code("ffmpeg\nnodejs\nlibgl1-mesa-glx\nlibglib2.0-0", language="text")
+    else:
+        st.success("✅ System Ready (FFmpeg & Node.js found)")
     
     st.subheader("🔍 Detection Settings")
     sensitivity = st.slider("Color Sensitivity", min_value=10, max_value=100, value=35, help="Higher = less sensitive to small color changes")
@@ -66,7 +86,13 @@ class MyLogger:
 
 # --- HELPER 1: GET METADATA ---
 def get_video_info(youtube_url, cookies_file=None):
-    ydl_opts = {'quiet': True, 'no_warnings': True, 'logger': MyLogger(), 'nocheckcertificate': True}
+    ydl_opts = {
+        'quiet': True, 
+        'no_warnings': True, 
+        'logger': MyLogger(), 
+        'nocheckcertificate': True,
+        'source_address': '0.0.0.0', # Force IPv4
+    }
     if cookies_file: ydl_opts['cookiefile'] = cookies_file
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -77,8 +103,15 @@ def get_video_info(youtube_url, cookies_file=None):
 # --- HELPER 2: GET STREAM URL (NO DOWNLOAD) ---
 def get_stream_url(youtube_url, format_str, cookies_file=None):
     ydl_opts = {
-        'quiet': True, 'no_warnings': True, 'nocheckcertificate': True, 
-        'ignoreerrors': True, 'logger': MyLogger(), 'format': format_str
+        'quiet': True, 
+        'no_warnings': True, 
+        'nocheckcertificate': True, 
+        'ignoreerrors': True, 
+        'logger': MyLogger(), 
+        'format': format_str,
+        'source_address': '0.0.0.0', # Force IPv4 to avoid IPv6 blocks
+        # Add User-Agent to look like a real browser
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
     }
     if cookies_file: ydl_opts['cookiefile'] = cookies_file
     try:
