@@ -67,7 +67,8 @@ def setup_cookies_file():
     try:
         # Create a temp file that persists for the session
         fp = tempfile.NamedTemporaryFile(delete=False, suffix='.txt', mode='w', encoding='utf-8')
-        fp.write(cookies_content)
+        # FIX: Strip the leading newline so the file starts with '# Netscape...'
+        fp.write(cookies_content.strip())
         fp.close()
         return fp.name
     except Exception as e:
