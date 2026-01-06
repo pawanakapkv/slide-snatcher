@@ -12,23 +12,18 @@ from PIL import Image
 
 # 1. PAGE CONFIGURATION
 st.set_page_config(page_title="Slide Snatcher", layout="wide")
-st.title("📸 YouTube Slide Snatcher (Low RAM Mode)")
-st.markdown("Paste a lecture link, **Select Quality**, set the **Time Range**, and I will scan for slides **without downloading** the whole file.")
+st.title("📥 YouTube Downloader (Server Base)")
+st.markdown("Step 1: Download video to server using Proxy & Cookies.")
 
 # Check for FFmpeg (Minimal check as requested)
 if not shutil.which('ffmpeg'):
-    st.warning("⚠️ FFmpeg is not installed. Video stream processing might fail.")
+    st.warning("⚠️ FFmpeg is not installed. Merging video+audio might fail.")
 
 # --- SESSION STATE INITIALIZATION ---
-if 'captured_images' not in st.session_state:
-    st.session_state['captured_images'] = [] # Stores compressed JPG buffers
 if 'video_info' not in st.session_state:
     st.session_state['video_info'] = None
 if 'url_input' not in st.session_state:
     st.session_state['url_input'] = ""
-
-# --- ADSTERRA CONFIGURATION ---
-ADSTERRA_DIRECT_LINK = "https://www.google.com" # REPLACE THIS
 
 # --------------------------------------------------------------------------
 # PROXY & AUTHENTICATION SETUP (FROM SECRETS)
@@ -38,7 +33,7 @@ proxy_url = None
 if "proxy_url" in st.secrets:
     proxy_url = st.secrets["proxy_url"]
 else:
-    st.warning("⚠️ No 'proxy_url' found in secrets! Scanning might fail due to IP blocking.")
+    st.warning("⚠️ No 'proxy_url' found in secrets! Downloads might fail due to IP blocking.")
 
 # Setup Cookies from Secrets
 @st.cache_resource
@@ -64,7 +59,7 @@ def setup_cookies_file():
 # Get the path to the auto-generated cookies file
 cookies_path = setup_cookies_file()
 
-# 2. SIDEBAR SETTINGS
+# 2. SIDEBAR SETTINGS (KEPT AS REQUESTED)
 with st.sidebar:
     st.header("⚙️ Settings")
     
@@ -78,12 +73,10 @@ with st.sidebar:
     max_skip = st.slider("Max Jump (Seconds)", 5, 30, 10)
 
 # --- CUSTOM LOGGER FOR DEBUGGING ---
-# Captures logs to show in UI if something fails
 class MyLogger:
     def __init__(self):
         self.logs = []
     def debug(self, msg): 
-        # Skip debug noise
         if "debug" in msg.lower(): return
         self.logs.append(f"[DEBUG] {msg}")
     def info(self, msg): 
@@ -93,7 +86,7 @@ class MyLogger:
     def error(self, msg): 
         self.logs.append(f"[ERROR] {msg}")
 
-# --- HELPER 1: GET METADATA ---
+# --- HELPER: GET METADATA ---
 def get_video_info(youtube_url, cookies_file=None, proxy=None):
     logger = MyLogger()
     ydl_opts = {
@@ -101,7 +94,6 @@ def get_video_info(youtube_url, cookies_file=None, proxy=None):
         'no_warnings': True, 
         'logger': logger, 
         'nocheckcertificate': True,
-        # REMOVED fake user_agent to prevent signature mismatch with OpenCV
     }
     if cookies_file: ydl_opts['cookiefile'] = cookies_file
     if proxy: ydl_opts['proxy'] = proxy
@@ -112,72 +104,6 @@ def get_video_info(youtube_url, cookies_file=None, proxy=None):
     except Exception as e:
         return None, f"{str(e)}\n\nLogs:\n" + "\n".join(logger.logs)
 
-# --- HELPER 2: GET STREAM URL (NO DOWNLOAD) ---
-def get_stream_url(youtube_url, format_str, cookies_file=None, proxy=None):
-    logger = MyLogger()
-    ydl_opts = {
-        'quiet': True, 
-        'no_warnings': True, 
-        'nocheckcertificate': True, 
-        'ignoreerrors': False, 
-        'logger': logger, 
-        'format': format_str,
-        # REMOVED fake user_agent to prevent signature mismatch with OpenCV
-        # 'user_agent': 'Mozilla/5.0 ...', 
-    }
-    if cookies_file: ydl_opts['cookiefile'] = cookies_file
-    if proxy: ydl_opts['proxy'] = proxy
-    
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(youtube_url, download=False)
-            
-            if info is None:
-                return None, None, f"Video info returned None. Logs:\n" + "\n".join(logger.logs)
-
-            return info.get('url', None), info.get('fps', 30), None
-    except Exception as e:
-        return None, None, f"{str(e)}\n\nLogs:\n" + "\n".join(logger.logs)
-
-# --- HELPER 3: CREATE SLIDESHOW VIDEO ---
-def create_summary_video(image_buffers):
-    if not image_buffers: return None
-    temp_dir = tempfile.gettempdir()
-    output_path = os.path.join(temp_dir, "summary_slideshow.mp4")
-    
-    first_img = cv2.imdecode(image_buffers[0], cv2.IMREAD_COLOR)
-    height, width, layers = first_img.shape
-    
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v') 
-    out = cv2.VideoWriter(output_path, fourcc, 0.5, (width, height)) 
-    
-    for buf in image_buffers:
-        img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
-        if img is None: continue
-        if img.shape[0] != height or img.shape[1] != width:
-            img = cv2.resize(img, (width, height))
-        out.write(img)
-        
-    out.release()
-    return output_path
-
-# --- HELPER 4: CREATE PDF ---
-def create_pdf(image_buffers):
-    if not image_buffers: return None
-    output_path = os.path.join(tempfile.gettempdir(), "lecture_slides.pdf")
-    pil_images = []
-    
-    for buf in image_buffers:
-        img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
-        if img is None: continue
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        pil_images.append(Image.fromarray(img_rgb))
-        
-    if pil_images:
-        pil_images[0].save(output_path, "PDF", resolution=100.0, save_all=True, append_images=pil_images[1:])
-        return output_path
-    return None
-
 def fmt_time(seconds):
     mins, secs = divmod(seconds, 60)
     hours, mins = divmod(mins, 60); 
@@ -187,11 +113,11 @@ def fmt_time(seconds):
 # 4. MAIN APP INTERFACE
 url = st.text_input("1. Enter YouTube URL:", value=st.session_state['url_input'], placeholder="https://www.youtube.com/watch?v=...")
 
-if st.button("Check Video 🔎"):
+if st.button("Fetch Info 🔎"):
     if not url:
         st.error("Please enter a URL.")
     else:
-        with st.spinner("Fetching video formats..."):
+        with st.spinner("Fetching video info..."):
             info, error_msg = get_video_info(url, cookies_file=cookies_path, proxy=proxy_url)
             
             if info:
@@ -211,10 +137,11 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
     with col_b:
         st.subheader(info.get('title', 'Unknown'))
         duration = info.get('duration', 0)
-        st.write(f"**Total Duration:** {fmt_time(duration)}")
+        st.write(f"**Duration:** {fmt_time(duration)}")
+        st.write(f"**Uploader:** {info.get('uploader', 'Unknown')}")
     
     # --- QUALITY SELECTION ---
-    st.write("### 2. Select Video Quality (Video Only)")
+    st.subheader("2. Select Quality to Download")
     formats = info.get('formats', [])
     unique_heights = set()
     for f in formats:
@@ -224,169 +151,70 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
     
     quality_options = {}
     for h in sorted_heights: 
-        # RELAXED FORMAT: Try video-only, but fallback to 'best' (video+audio) if adaptive stream missing
-        # This fixes "Requested format is not available" when n-sig challenge fails
-        quality_options[f"{h}p (Stream)"] = f"bestvideo[height<={h}]/best[height<={h}]"
+        quality_options[f"{h}p"] = f"bestvideo[height<={h}]+bestaudio/best[height<={h}]"
     
-    quality_options["Best Available (Stream)"] = "bestvideo/best"
+    quality_options["Best Available"] = "bestvideo+bestaudio/best"
+    quality_options["Audio Only (MP3)"] = "audio_only"
 
-    selected_q_label = st.selectbox("Choose quality to scan:", list(quality_options.keys()))
-    selected_format_str = quality_options[selected_q_label]
-
-    # --- TIME RANGE SELECTION ---
-    st.write("### 3. Select Time Range to Scan")
-    start_val, end_val = st.slider("Drag sliders to select start and end points:", min_value=0, max_value=duration, value=(0, duration), format="mm:ss")
+    selected_q_label = st.selectbox("Choose quality:", list(quality_options.keys()))
     
-    st.info(f"⏱️ Will scan **{selected_q_label}** from **{fmt_time(start_val)}** to **{fmt_time(end_val)}**")
+    if st.button("Download to Server ⬇️", type="primary"):
+        # Progress hooks
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        def progress_hook(d):
+            if d['status'] == 'downloading':
+                try:
+                    p = d.get('_percent_str', '0%').replace('%', '')
+                    if p and p != 'N/A':
+                        progress_bar.progress(min(float(p) / 100, 1.0))
+                    status_text.text(f"Downloading: {d.get('_percent_str')} - ETA: {d.get('_eta_str')}")
+                except: pass
+            elif d['status'] == 'finished':
+                progress_bar.progress(1.0)
+                status_text.text("Download complete. Processing...")
 
-    # --- CONTROLS ---
-    col_start, col_stop = st.columns(2)
-    start_btn = col_start.button("Start Live Scan 🚀", type="primary")
-    stop_btn = col_stop.button("Stop & Save ⏹️")
+        # Setup Options
+        format_str = quality_options[selected_q_label]
+        postprocessors = []
+        if "Audio Only" in selected_q_label:
+            format_str = 'bestaudio/best'
+            postprocessors = [{'key': 'FFmpegExtractAudio','preferredcodec': 'mp3','preferredquality': '192'}]
 
-    if start_btn:
-        try:
-            st.session_state['captured_images'] = []
-            
-            js = f"window.open('{ADSTERRA_DIRECT_LINK}', '_blank');"
-            components.html(f"<script>{js}</script>", height=0, width=0)
-            
-            status_text = st.empty()
-            progress_bar = st.progress(0)
-            
-            status_text.info(f"🌐 Fetching stream URL via Proxy...")
-            stream_url, meta_fps, stream_error = get_stream_url(url, selected_format_str, cookies_path, proxy_url)
-            
-            if not stream_url:
-                st.error(f"❌ Could not retrieve stream URL.\n\nError details: {stream_error}")
-            else:
-                status_text.info(f"🎥 Connecting to stream...")
+        # Temporary Directory for Download
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ydl_opts = {
+                'format': format_str,
+                'outtmpl': os.path.join(tmp_dir, '%(title)s.%(ext)s'),
+                'progress_hooks': [progress_hook],
+                'postprocessors': postprocessors,
+                'proxy': proxy_url,
+                'cookiefile': cookies_path,
+                'quiet': True,
+                'no_warnings': True,
+            }
+
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([url])
                 
-                if proxy_url:
-                    os.environ['http_proxy'] = proxy_url
-                    os.environ['https_proxy'] = proxy_url
-                    os.environ['HTTP_PROXY'] = proxy_url
-                    os.environ['HTTPS_PROXY'] = proxy_url
-                
-                cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
-                
-                if not cap.isOpened():
-                    st.error("Error connecting to video stream. OpenCV could not open the URL.")
-                else:
-                    # --- NEW ROBUSTNESS CHECK ---
-                    # 1. Test connection by reading 1 frame
-                    ret_check, _ = cap.read()
-                    if not ret_check:
-                         st.error("❌ Connection refused by YouTube (403 Forbidden). Even though we found the URL, YouTube rejected the video player request. Try selecting a lower quality (like 360p) or checking your Proxy/Cookies.")
-                         cap.release()
-                    else:
-                        # 2. Connection success! Now setup scanning
-                        fps = cap.get(cv2.CAP_PROP_FPS)
-                        if fps <= 0 or fps > 120: fps = meta_fps if meta_fps else 30
-                        
-                        last_frame_data = None
-                        current_frame_pos = int(start_val * fps)
-                        end_frame_pos = int(end_val * fps)
-                        total_scan_frames = end_frame_pos - current_frame_pos
-                        
-                        # 3. Try to seek to start position
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_pos)
-                        ret, frame = cap.read()
-                        
-                        # 4. Fallback if seek fails
-                        if not ret:
-                            st.warning(f"⚠️ Could not jump directly to {fmt_time(start_val)} (Stream doesn't support seeking). Starting scan from the beginning (0:00) instead.")
-                            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                            current_frame_pos = 0
-                            # Recalculate range
-                            total_scan_frames = end_frame_pos # Scan from 0 to end_val
-                            ret, frame = cap.read()
-                            
-                        if not ret:
-                            st.error("❌ Critical Error: Stream became unreadable after connection. We cannot proceed.")
-                        else:
-                            # 5. START MAIN LOOP
-                            orig_h, orig_w = frame.shape[:2]
-                            process_w = 640
-                            process_h = int(process_w * (orig_h / orig_w)) if orig_w > 0 else 360
-                            total_pixel_count = process_w * process_h
-                            motion_threshold_score = int(total_pixel_count * (strictness / 100) * 255)
-                            jump_small = int(fps * min_skip)
-                            jump_large = int(fps * max_skip)
-                            
-                            st.divider()
-                            st.subheader("Results (Live Stream)")
-                            
-                            while current_frame_pos < end_frame_pos:
-                                cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_pos)
-                                ret, frame = cap.read()
-                                if not ret: break 
-                                
-                                if total_scan_frames > 0:
-                                    relative_pos = current_frame_pos - (0 if current_frame_pos < int(start_val * fps) else int(start_val * fps))
-                                    # Safe progress calculation
-                                    prog = min(max(relative_pos / total_scan_frames, 0.0), 1.0)
-                                    progress_bar.progress(prog)
-
-                                small_frame = cv2.resize(frame, (process_w, process_h))
-                                gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
-                                gray = cv2.GaussianBlur(gray, (21, 21), 0)
-
-                                found_new_slide = False
-                                if last_frame_data is None:
-                                    found_new_slide = True
-                                    last_frame_data = gray
-                                else:
-                                    diff = cv2.absdiff(last_frame_data, gray)
-                                    _, thresh = cv2.threshold(diff, sensitivity, 255, cv2.THRESH_BINARY)
-                                    if np.sum(thresh) > motion_threshold_score:
-                                        found_new_slide = True
-                                        last_frame_data = gray
-                                
-                                if found_new_slide:
-                                    retval, buffer = cv2.imencode('.jpg', frame)
-                                    if retval:
-                                        st.session_state['captured_images'].append(buffer)
-                                    
-                                    time_str = fmt_time(current_frame_pos / fps)
-                                    img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                                    st.image(img_rgb, caption=f"Slide #{len(st.session_state['captured_images'])} at {time_str}", channels="RGB")
-                                    current_frame_pos += jump_large 
-                                else:
-                                    current_frame_pos += jump_small
-
-                            cap.release()
-                            progress_bar.empty()
-                            status_text.success(f"✅ Scanning Complete! Found {len(st.session_state['captured_images'])} slides.")
-                        
-                if proxy_url:
-                    os.environ.pop('http_proxy', None)
-                    os.environ.pop('https_proxy', None)
-                    os.environ.pop('HTTP_PROXY', None)
-                    os.environ.pop('HTTPS_PROXY', None)
+                # Check file
+                files = os.listdir(tmp_dir)
+                if files:
+                    file_name = files[0]
+                    file_path = os.path.join(tmp_dir, file_name)
+                    with open(file_path, "rb") as f:
+                        file_data = f.read()
                     
-        except Exception as e:
-            st.error(f"❌ An unexpected error occurred:\n\n{e}")
-
-    # --- RESULT DISPLAY ---
-    if len(st.session_state.get('captured_images', [])) > 0:
-        if stop_btn:
-             st.warning("⚠️ Scanning stopped by user. Showing results captured so far...")
-        
-        st.divider()
-        st.success(f"🎉 **Results Ready:** {len(st.session_state['captured_images'])} Slides Captured")
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("📄 Download PDF")
-            pdf_path = create_pdf(st.session_state['captured_images'])
-            if pdf_path and os.path.exists(pdf_path):
-                with open(pdf_path, "rb") as f:
-                    st.download_button("Download PDF", f.read(), "slides.pdf", "application/pdf")
-
-        with col2:
-            st.subheader("⏩ Download Video")
-            summary_path = create_summary_video(st.session_state['captured_images'])
-            if summary_path and os.path.exists(summary_path):
-                with open(summary_path, "rb") as f:
-                    st.download_button("Download Slideshow", f.read(), "slideshow.mp4", "video/mp4")
+                    st.success(f"✅ Downloaded '{file_name}' to server!")
+                    st.download_button(
+                        label="💾 Save to Local Device",
+                        data=file_data,
+                        file_name=file_name,
+                        mime="application/octet-stream"
+                    )
+                else:
+                    st.error("Download finished but file not found.")
+            except Exception as e:
+                st.error(f"Download failed: {e}")
