@@ -225,10 +225,11 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
     
     quality_options = {}
     for h in sorted_heights: 
-        # RELAXED FORMAT: Use <= to find closest match if exact match missing
-        quality_options[f"{h}p (Stream)"] = f"bestvideo[height<={h}]"
+        # RELAXED FORMAT: Try video-only, but fallback to 'best' (video+audio) if adaptive stream missing
+        # This fixes "Requested format is not available" when n-sig challenge fails
+        quality_options[f"{h}p (Stream)"] = f"bestvideo[height<={h}]/best[height<={h}]"
     
-    quality_options["Best Available (Stream)"] = "bestvideo"
+    quality_options["Best Available (Stream)"] = "bestvideo/best"
 
     selected_q_label = st.selectbox("Choose quality to scan:", list(quality_options.keys()))
     selected_format_str = quality_options[selected_q_label]
