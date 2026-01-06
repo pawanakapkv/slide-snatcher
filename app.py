@@ -142,83 +142,87 @@ if st.session_state.video_info:
     
     selected_label = st.selectbox("Select Quality", list(quality_options.keys()))
     
-    # Download Path (Local System)
-    # Note: If running on Cloud, this defaults to the ephemeral container storage
-    default_path = os.getcwd()
-    download_path = st.text_input("Save to folder:", value=default_path)
-    
-    if st.button("Download Now", type="primary"):
-        # ------------------------------------------------------------------
-        # FOLDER CHECK & CREATION
-        # ------------------------------------------------------------------
-        # Instead of erroring, we now try to create the folder if it's missing
-        if not os.path.exists(download_path):
-            try:
-                os.makedirs(download_path, exist_ok=True)
-                st.info(f"📁 Created new download folder: {download_path}")
-            except Exception as e:
-                st.error(f"❌ Could not create folder: {e}")
-                st.stop()
+    # --- CHANGED: Removed manual folder input. Use Temp Dir + Download Button instead ---
+    if st.button("Start Processing & Download", type="primary"):
+        # Progress Bar and Status placeholders
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        def progress_hook(d):
+            if d['status'] == 'downloading':
+                try:
+                    p = d.get('_percent_str', '0%').replace('%', '')
+                    if p and p != 'N/A':
+                        progress = float(p) / 100
+                        progress_bar.progress(min(progress, 1.0))
+                    
+                    status_msg = f"Downloading: {d.get('_percent_str')} "
+                    if d.get('_eta_str'):
+                        status_msg += f"- ETA: {d.get('_eta_str')}"
+                    status_text.text(status_msg)
+                except Exception:
+                    pass
+            elif d['status'] == 'finished':
+                progress_bar.progress(1.0)
+                status_text.text("Download complete. Preparing file for you...")
 
-        if not os.path.isdir(download_path):
-            st.error("Invalid download path. Please check the folder location.")
-        else:
-            # Progress Bar and Status placeholders
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            def progress_hook(d):
-                if d['status'] == 'downloading':
-                    try:
-                        p = d.get('_percent_str', '0%').replace('%', '')
-                        if p and p != 'N/A':
-                            progress = float(p) / 100
-                            progress_bar.progress(min(progress, 1.0))
-                        
-                        status_msg = f"Downloading: {d.get('_percent_str')} "
-                        if d.get('_eta_str'):
-                            status_msg += f"- ETA: {d.get('_eta_str')}"
-                        status_text.text(status_msg)
-                    except Exception:
-                        pass
-                elif d['status'] == 'finished':
-                    progress_bar.progress(1.0)
-                    status_text.text("Download complete. Processing/Converting...")
-
-            # Prepare Options
-            format_str = quality_options[selected_label]
-            postprocessors = []
-            
-            if "Audio Only" in selected_label:
-                format_str = 'bestaudio/best'
-                postprocessors = [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }]
-            
-            # ------------------------------------------------------------------
-            # FINAL DOWNLOAD OPTIONS
-            # ------------------------------------------------------------------
+        # Prepare Options
+        format_str = quality_options[selected_label]
+        postprocessors = []
+        
+        if "Audio Only" in selected_label:
+            format_str = 'bestaudio/best'
+            postprocessors = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }]
+        
+        # Use a Temporary Directory to store the file on the server
+        with tempfile.TemporaryDirectory() as tmp_dir:
             ydl_opts = {
                 'format': format_str,
-                'outtmpl': os.path.join(download_path, '%(title)s.%(ext)s'),
+                'outtmpl': os.path.join(tmp_dir, '%(title)s.%(ext)s'),
                 'progress_hooks': [progress_hook],
                 'postprocessors': postprocessors,
                 'proxy': proxy_url, 
-                'cookiefile': cookie_path, # Passed the hardcoded cookie path
+                'cookiefile': cookie_path,
             }
             
             # Start Download
+            download_success = False
             try:
-                # Debug message (optional)
                 if proxy_url:
                     st.info(f"Connecting via Proxy...")
                 
-                with st.spinner("Starting download..."):
+                with st.spinner("Downloading video to server..."):
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         ydl.download([url])
-                st.success(f"✅ Download complete! Saved to: {download_path}")
-                st.balloons()
+                download_success = True
             except Exception as e:
                 st.error(f"❌ Download failed: {e}")
+
+            # If successful, find the file and offer it to the user
+            if download_success:
+                try:
+                    # Find the downloaded file in the temp dir
+                    files = os.listdir(tmp_dir)
+                    if files:
+                        file_name = files[0]
+                        file_path = os.path.join(tmp_dir, file_name)
+                        
+                        # Read file into memory
+                        with open(file_path, "rb") as f:
+                            file_data = f.read()
+                        
+                        st.success("✅ Ready! Click the button below to save to your device.")
+                        st.download_button(
+                            label=f"⬇️ Save '{file_name}' to Downloads",
+                            data=file_data,
+                            file_name=file_name,
+                            mime="application/octet-stream"
+                        )
+                    else:
+                        st.error("Download finished, but file not found on server.")
+                except Exception as e:
+                    st.error(f"Error preparing download: {e}")
