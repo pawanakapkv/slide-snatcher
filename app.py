@@ -15,9 +15,9 @@ st.set_page_config(page_title="Slide Snatcher", layout="wide")
 st.title("📸 YouTube Slide Snatcher (Segment Mode)")
 st.markdown("Step 1: Select **Segments** or **Chapters**. Step 2: Download & Scan.")
 
-# Check for FFmpeg (Modified: We will try to proceed without it)
+# Check for FFmpeg
 if not shutil.which('ffmpeg'):
-    st.info("ℹ️ FFmpeg not detected. Using **Video Only** mode. Downloads will snap to the nearest keyframe (approximate cuts).")
+    st.info("ℹ️ FFmpeg not detected. Using **Video Only** mode. Downloads will snap to the nearest keyframe.")
 
 # --- SESSION STATE INITIALIZATION ---
 if 'video_info' not in st.session_state:
@@ -26,6 +26,9 @@ if 'url_input' not in st.session_state:
     st.session_state['url_input'] = ""
 if 'captured_images' not in st.session_state:
     st.session_state['captured_images'] = []
+# New state to persist the downloaded file across re-runs
+if 'ready_segment' not in st.session_state:
+    st.session_state['ready_segment'] = None 
 
 # --------------------------------------------------------------------------
 # PROXY & AUTHENTICATION SETUP (FROM SECRETS)
@@ -88,7 +91,6 @@ def create_pdf(image_buffers):
     if not image_buffers: return None
     output_path = os.path.join(tempfile.gettempdir(), "lecture_slides.pdf")
     pil_images = []
-    # Import locally to avoid top-level dependency issues if PIL missing
     from PIL import Image
     for buf in image_buffers:
         img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
@@ -118,6 +120,9 @@ if st.button("Fetch Info 🔎"):
             if info:
                 st.session_state['video_info'] = info
                 st.session_state['url_input'] = url 
+                # Reset previous results when new video is loaded
+                st.session_state['ready_segment'] = None
+                st.session_state['captured_images'] = []
                 st.rerun() 
             else:
                 st.error(f"❌ Could not find video. Error details:\n\n{error_msg}")
@@ -146,7 +151,6 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
     
     quality_options = {}
     for h in sorted_heights: 
-        # MODIFIED: Video Only to avoid FFmpeg dependency for merging
         quality_options[f"{h}p"] = f"bestvideo[height<={h}]"
     quality_options["Best Available"] = "bestvideo"
     
@@ -158,7 +162,6 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
     chapters = info.get('chapters')
     use_chapters = False
     
-    # Checkbox to toggle chapters if they exist
     if chapters:
         use_chapters = st.checkbox(f"Use YouTube Chapters ({len(chapters)} found)", value=True)
     
@@ -166,51 +169,86 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
     end_val = duration
     
     if use_chapters and chapters:
-        # Chapter Selection Mode
         chapter_names = [f"{i+1}. {c['title']} ({fmt_time(c['start_time'])})" for i, c in enumerate(chapters)]
-        # Allow selecting a range of chapters
         start_chapter_idx, end_chapter_idx = st.select_slider(
             "Select Chapter Range",
             options=range(len(chapters)),
             value=(0, len(chapters)-1),
             format_func=lambda i: chapter_names[i]
         )
-        
-        # Calculate times from selected chapters
         start_val = chapters[start_chapter_idx]['start_time']
         end_val = chapters[end_chapter_idx]['end_time']
-        
         st.info(f"📍 Selected: **{chapters[start_chapter_idx]['title']}** to **{chapters[end_chapter_idx]['title']}**")
         
     else:
-        # Segment Division Mode (User's request: Continuous Segments)
         st.markdown("YouTube stores videos in small data chunks. Select which continuous segments you want to download.")
-        
         col_seg_1, col_seg_2 = st.columns([1, 3])
         with col_seg_1:
             seg_len = st.selectbox("Segment Size", [10, 30, 60], index=0, format_func=lambda x: f"{x} Seconds")
         
-        # Calculate total segments based on duration and selected segment length
         total_segments = ceil(duration / seg_len)
         
         with col_seg_2:
-            # Range slider from Segment 1 to Segment N
             sel_range = st.slider(
                 f"Select Segment Range (Total {total_segments})", 
                 1, total_segments, (1, min(5, total_segments))
             )
             
-        # Calculate times based on segments
-        # Segment 1 corresponds to 0s to seg_len
         start_val = (sel_range[0] - 1) * seg_len
         end_val = sel_range[1] * seg_len
-        
-        # Clamp end_val to actual duration
         if end_val > duration: end_val = duration
         
         st.info(f"⏱️ Downloading **Segments {sel_range[0]} - {sel_range[1]}** (Time: {fmt_time(start_val)} to {fmt_time(end_val)})")
     
-    if st.button("Download & Scan 🚀", type="primary"):
+    # --- ACTION BUTTONS ---
+    col_btn_1, col_btn_2 = st.columns(2)
+    start_scan_btn = col_btn_1.button("Download & Scan 🚀", type="primary")
+    process_dl_btn = col_btn_2.button("Download Segment Only 📥")
+
+    # Common Vars
+    format_str = quality_options[selected_q_label]
+    def download_range_func(info_dict, ydl):
+        return [{'start_time': start_val, 'end_time': end_val}]
+
+    # --- DOWNLOAD ONLY LOGIC ---
+    if process_dl_btn:
+        st.session_state['captured_images'] = [] # Clear images to avoid showing stale PDF button
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ydl_opts = {
+                'format': format_str,
+                'outtmpl': os.path.join(tmp_dir, '%(title)s.%(ext)s'),
+                'proxy': proxy_url,
+                'cookiefile': cookies_path,
+                'quiet': True,
+                'no_warnings': True,
+                'download_ranges': download_range_func,
+            }
+            try:
+                with st.spinner("Downloading video segment..."):
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        ydl.download([url])
+                
+                files = os.listdir(tmp_dir)
+                if files:
+                    file_name = files[0]
+                    file_path = os.path.join(tmp_dir, file_name)
+                    with open(file_path, "rb") as f:
+                        file_bytes = f.read()
+                    
+                    # Store in session state so button persists
+                    st.session_state['ready_segment'] = {
+                        'name': file_name,
+                        'data': file_bytes
+                    }
+                    st.success("✅ Segment Ready! Click download below.")
+                else:
+                    st.error("Download failed (file not found).")
+            except Exception as e:
+                st.error(f"Download Error: {e}")
+
+    # --- DOWNLOAD & SCAN LOGIC ---
+    if start_scan_btn:
+        st.session_state['ready_segment'] = None
         st.session_state['captured_images'] = []
         progress_bar = st.progress(0)
         status_text = st.empty()
@@ -226,13 +264,6 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
             elif d['status'] == 'finished':
                 progress_bar.progress(1.0)
                 status_text.text("Download complete. Starting Scan...")
-
-        # Setup Options
-        format_str = quality_options[selected_q_label]
-        
-        # --- DOWNLOAD RANGES CALLBACK ---
-        def download_range_func(info_dict, ydl):
-            return [{'start_time': start_val, 'end_time': end_val}]
 
         # Temporary Directory for Download & Scan
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -259,11 +290,16 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                     file_name = files[0]
                     file_path = os.path.join(tmp_dir, file_name)
                     
-                    # Read the video file bytes for the download button later
+                    # SAVE FILE DATA FOR LATER DOWNLOAD
                     with open(file_path, "rb") as f:
-                        video_bytes = f.read()
+                        file_bytes = f.read()
+                    
+                    st.session_state['ready_segment'] = {
+                        'name': file_name,
+                        'data': file_bytes
+                    }
 
-                    # 2. SCANNING LOGIC (Using local file)
+                    # 2. SCANNING LOGIC
                     status_text.info(f"📂 Scanning local file: {file_name}")
                     
                     cap = cv2.VideoCapture(file_path)
@@ -274,19 +310,11 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                         if fps <= 0: fps = 30
                         
                         last_frame_data = None
-                        
-                        # Since we downloaded ONLY the segment, the file starts at 0:00
-                        # which corresponds to 'start_val' in the original video.
                         current_frame_pos = 0 
-                        
-                        # We scan the entire downloaded clip
                         total_frames_in_file = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
                         end_frame_pos = total_frames_in_file
-                        
-                        # Set initial position (start of the file)
                         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                         
-                        # Image processing vars
                         orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                         orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                         process_w = 640
@@ -297,7 +325,7 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                         jump_large = int(fps * max_skip)
                         
                         st.divider()
-                        st.subheader("Results")
+                        st.subheader("Scanning Results")
                         
                         while current_frame_pos < end_frame_pos:
                             cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_pos)
@@ -323,17 +351,18 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                                     last_frame_data = gray
                             
                             if found_new_slide:
-                                # Correct timestamp: File Time + Original Start Time
+                                retval, buffer = cv2.imencode('.jpg', frame)
+                                if retval:
+                                    st.session_state['captured_images'].append(buffer)
+                                
+                                # Correct timestamp
                                 current_file_time = current_frame_pos / fps
                                 actual_video_time = current_file_time + start_val
                                 time_str = fmt_time(actual_video_time)
                                 
                                 img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                                # Show the detected slide on screen
                                 st.image(img_rgb, caption=f"Found at {time_str}", channels="RGB")
                                 
-                                # Update position
-                                last_frame_data = gray
                                 current_frame_pos += jump_large 
                             else:
                                 current_frame_pos += jump_small
@@ -341,29 +370,37 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                         cap.release()
                         progress_bar.empty()
                         status_text.success(f"✅ Scanning Complete!")
-                        
-                        # 3. DOWNLOAD BUTTON (Instead of PDF)
-                        st.divider()
-                        st.subheader("⬇️ Download Segment")
-                        st.download_button(
-                            label=f"Download Video Clip ({file_name})",
-                            data=video_bytes,
-                            file_name=file_name,
-                            mime="application/octet-stream"
-                        )
 
                 else:
                     st.error("Download finished but file not found on server.")
             except Exception as e:
                 st.error(f"Process failed: {e}")
 
-    # --- RESULT DOWNLOADS (PDF) ---
-    if len(st.session_state.get('captured_images', [])) > 0:
+    # --- DISPLAY DOWNLOADS (Persistent) ---
+    if len(st.session_state.get('captured_images', [])) > 0 or st.session_state['ready_segment']:
         st.divider()
-        st.success(f"🎉 **Results Ready:** {len(st.session_state['captured_images'])} Slides Captured")
+        st.subheader("📥 Downloads")
+        col_res_1, col_res_2 = st.columns(2)
         
-        st.subheader("📄 Download PDF")
-        pdf_path = create_pdf(st.session_state['captured_images'])
-        if pdf_path and os.path.exists(pdf_path):
-            with open(pdf_path, "rb") as f:
-                st.download_button("Download PDF", f.read(), "slides.pdf", "application/pdf")
+        # 1. Video Segment Download (Available for both modes)
+        with col_res_1:
+            if st.session_state['ready_segment']:
+                st.download_button(
+                    label=f"💾 Save Video Segment '{st.session_state['ready_segment']['name']}'",
+                    data=st.session_state['ready_segment']['data'],
+                    file_name=st.session_state['ready_segment']['name'],
+                    mime="application/octet-stream",
+                    key="dl_vid_btn_final"
+                )
+            else:
+                st.info("No video segment ready.")
+
+        # 2. PDF Download (Only if scan happened)
+        with col_res_2:
+            if len(st.session_state.get('captured_images', [])) > 0:
+                pdf_path = create_pdf(st.session_state['captured_images'])
+                if pdf_path and os.path.exists(pdf_path):
+                    with open(pdf_path, "rb") as f:
+                        st.download_button("📄 Save Slides as PDF", f.read(), "slides.pdf", "application/pdf", key="dl_pdf_btn")
+            elif start_scan_btn:
+                st.info("No slides detected in this segment.")
