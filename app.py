@@ -203,17 +203,17 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
     formats = info.get('formats', [])
     unique_heights = set()
     for f in formats:
-        # Filter for streams that have video height and use HTTP (easiest for opencv)
+        # Relaxed filtering: Removed requirement for 'http' protocol to allow more streams
         if f.get('vcodec') != 'none' and f.get('height'): 
             unique_heights.add(f['height'])
     sorted_heights = sorted(unique_heights, reverse=True)
     
     quality_options = {}
     for h in sorted_heights: 
-        # We explicitly request http protocol to ensure cv2 can read it easily
-        quality_options[f"{h}p (Stream)"] = f"bestvideo[height={h}][protocol^=http]"
+        # Removed [protocol^=http] to allow HLS/DASH streams which FFmpeg handles well
+        quality_options[f"{h}p (Stream)"] = f"bestvideo[height={h}]"
     
-    quality_options["Best Available (Stream)"] = "bestvideo[protocol^=http]"
+    quality_options["Best Available (Stream)"] = "bestvideo"
 
     selected_q_label = st.selectbox("Choose quality to scan:", list(quality_options.keys()))
     selected_format_str = quality_options[selected_q_label]
@@ -247,6 +247,13 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
             st.error("Could not retrieve stream URL. YouTube might have blocked the IP or proxy.")
         else:
             status_text.info(f"🎥 Connecting to stream...")
+            
+            # --- CRITICAL FIX: FORCE OPENCV TO USE PROXY ---
+            if proxy_url:
+                os.environ['http_proxy'] = proxy_url
+                os.environ['https_proxy'] = proxy_url
+                os.environ['HTTP_PROXY'] = proxy_url
+                os.environ['HTTPS_PROXY'] = proxy_url
             
             # Explicitly use FFmpeg backend for Streamlit Cloud/Linux environments
             cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
@@ -319,6 +326,13 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                     cap.release()
                     progress_bar.empty()
                     status_text.success(f"✅ Scanning Complete! Found {len(st.session_state['captured_images'])} slides.")
+                    
+            # --- CLEANUP PROXY ENV VARS (Optional but good practice) ---
+            if proxy_url:
+                os.environ.pop('http_proxy', None)
+                os.environ.pop('https_proxy', None)
+                os.environ.pop('HTTP_PROXY', None)
+                os.environ.pop('HTTPS_PROXY', None)
 
     # --- RESULT DISPLAY ---
     if len(st.session_state.get('captured_images', [])) > 0:
