@@ -34,6 +34,8 @@ if 'ready_segment' not in st.session_state:
 # --------------------------------------------------------------------------
 proxy_url = "http://tdwdphqm:qretvj7vcdpn@142.111.48.253:7030/"
 
+# Note: Cookies are defined but NOT passed to yt-dlp below to prevent 
+# the 'skipping client' error on Android/iOS.
 cookies_content = """
 # Netscape HTTP Cookie File
 # https://curl.haxx.se/rfc/cookie_spec.html
@@ -65,9 +67,7 @@ cookies_content = """
 @st.cache_resource
 def setup_cookies_file():
     try:
-        # Create a temp file that persists for the session
         fp = tempfile.NamedTemporaryFile(delete=False, suffix='.txt', mode='w', encoding='utf-8')
-        # FIX: Strip the leading newline so the file starts with '# Netscape...'
         fp.write(cookies_content.strip())
         fp.close()
         return fp.name
@@ -99,15 +99,18 @@ class MyLogger:
 # --- HELPERS: METADATA ---
 def get_video_info(youtube_url, cookies_file=None, proxy=None):
     logger = MyLogger()
-    # MODIFIED: Removed manual user_agent to prevent signature mismatch with 'ios' client
+    # MODIFIED: Use Android client WITHOUT COOKIES to allow robust access
     ydl_opts = {
         'quiet': True, 
         'no_warnings': True, 
         'logger': logger, 
         'nocheckcertificate': True,
-        'extractor_args': {'youtube': {'player_client': ['ios', 'android', 'web']}},
+        # We allow android and ios. No manual user_agent.
+        'extractor_args': {'youtube': {'player_client': ['android', 'ios']}},
     }
-    if cookies_file: ydl_opts['cookiefile'] = cookies_file
+    # Commented out cookiefile: Passing it causes yt-dlp to SKIP android/ios clients
+    # if cookies_file: ydl_opts['cookiefile'] = cookies_file
+    
     if proxy: ydl_opts['proxy'] = proxy
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -178,7 +181,7 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
     
     quality_options = {}
     for h in sorted_heights: 
-        # MODIFIED: Fallback to 'best' (progressive) if 'bestvideo' is unavailable
+        # Fallback to 'best' (progressive) if 'bestvideo' is unavailable
         quality_options[f"{h}p"] = f"bestvideo[height<={h}]/best[height<={h}]"
     quality_options["Best Available"] = "bestvideo/best"
     
@@ -241,18 +244,16 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
     if process_dl_btn:
         st.session_state['captured_images'] = []
         with tempfile.TemporaryDirectory() as tmp_dir:
-            # MODIFIED: Removed manual user_agent, adjusted clients
+            # MODIFIED: Android client, no cookies, no manual UA
             ydl_opts = {
                 'format': format_str,
                 'outtmpl': os.path.join(tmp_dir, '%(title)s.%(ext)s'),
                 'proxy': proxy_url,
-                'cookiefile': cookies_path,
+                # 'cookiefile': cookies_path, # Disabled
                 'quiet': True,
                 'no_warnings': True,
                 'download_ranges': download_range_func,
-                # MODIFIED: Use iOS client + User Agent
-                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'extractor_args': {'youtube': {'player_client': ['ios', 'web']}},
+                'extractor_args': {'youtube': {'player_client': ['android', 'ios']}},
             }
             try:
                 with st.spinner("Downloading video segment..."):
@@ -296,19 +297,17 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                 status_text.text("Download complete. Starting Scan...")
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            # MODIFIED: Removed manual user_agent, adjusted clients
+            # MODIFIED: Android client, no cookies, no manual UA
             ydl_opts = {
                 'format': format_str,
                 'outtmpl': os.path.join(tmp_dir, '%(title)s.%(ext)s'),
                 'progress_hooks': [progress_hook],
                 'proxy': proxy_url,
-                'cookiefile': cookies_path,
+                # 'cookiefile': cookies_path, # Disabled
                 'quiet': True,
                 'no_warnings': True,
                 'download_ranges': download_range_func,
-                # MODIFIED: Use iOS client + User Agent
-                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'extractor_args': {'youtube': {'player_client': ['ios', 'web']}},
+                'extractor_args': {'youtube': {'player_client': ['android', 'ios']}},
             }
 
             try:
