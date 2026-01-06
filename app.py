@@ -12,42 +12,37 @@ from PIL import Image
 
 # 1. PAGE CONFIGURATION
 st.set_page_config(page_title="Slide Snatcher", layout="wide")
-st.title("📥 YouTube Downloader (Server Base)")
-st.markdown("Step 1: Download video to server using Proxy & Cookies.")
+st.title("📸 YouTube Slide Snatcher (Download & Scan Mode)")
+st.markdown("Step 1: Download video to server. Step 2: Auto-scan for slides.")
 
-# Check for FFmpeg (Minimal check as requested)
+# Check for FFmpeg
 if not shutil.which('ffmpeg'):
-    st.warning("⚠️ FFmpeg is not installed. Merging video+audio might fail.")
+    st.warning("⚠️ FFmpeg is not installed. Video processing might fail.")
 
 # --- SESSION STATE INITIALIZATION ---
 if 'video_info' not in st.session_state:
     st.session_state['video_info'] = None
 if 'url_input' not in st.session_state:
     st.session_state['url_input'] = ""
+if 'captured_images' not in st.session_state:
+    st.session_state['captured_images'] = []
 
 # --------------------------------------------------------------------------
 # PROXY & AUTHENTICATION SETUP (FROM SECRETS)
 # --------------------------------------------------------------------------
-# Retrieve proxy from Streamlit secrets
 proxy_url = None
 if "proxy_url" in st.secrets:
     proxy_url = st.secrets["proxy_url"]
 else:
-    st.warning("⚠️ No 'proxy_url' found in secrets! Downloads might fail due to IP blocking.")
+    st.warning("⚠️ No 'proxy_url' found in secrets! Downloads might fail.")
 
-# Setup Cookies from Secrets
 @st.cache_resource
 def setup_cookies_file():
-    """Reads cookies from st.secrets and writes them to a temp file."""
     if "cookies" not in st.secrets:
-        st.warning("⚠️ No 'cookies' found in secrets! You may encounter 'Sign in' errors.")
+        st.warning("⚠️ No 'cookies' found in secrets!")
         return None
-        
     try:
-        # Get cookies string from secrets
         cookies_content = st.secrets["cookies"]
-        
-        # Create a temp file that persists for the session
         fp = tempfile.NamedTemporaryFile(delete=False, suffix='.txt', mode='w', encoding='utf-8')
         fp.write(cookies_content)
         fp.close()
@@ -56,53 +51,52 @@ def setup_cookies_file():
         st.error(f"Error setting up cookies: {e}")
         return None
 
-# Get the path to the auto-generated cookies file
 cookies_path = setup_cookies_file()
 
-# 2. SIDEBAR SETTINGS (KEPT AS REQUESTED)
+# 2. SIDEBAR SETTINGS
 with st.sidebar:
     st.header("⚙️ Settings")
-    
     st.subheader("🔍 Detection Settings")
     sensitivity = st.slider("Color Sensitivity", min_value=10, max_value=100, value=35, help="Higher = less sensitive to small color changes")
     strictness = st.slider("Strictness (%)", min_value=0.1, max_value=100.0, value=1.0, step=0.1, help="Percentage of screen that must change to trigger a capture")
-    
     st.divider()
-    st.info("💡 **Speed Tip:** 'Scan Frequency' is now dynamic!")
+    st.info("💡 **Speed Tip:** Adjust jump intervals")
     min_skip = st.slider("Min Jump (Seconds)", 1, 5, 2)
     max_skip = st.slider("Max Jump (Seconds)", 5, 30, 10)
 
-# --- CUSTOM LOGGER FOR DEBUGGING ---
+# --- LOGGING ---
 class MyLogger:
-    def __init__(self):
-        self.logs = []
-    def debug(self, msg): 
-        if "debug" in msg.lower(): return
-        self.logs.append(f"[DEBUG] {msg}")
-    def info(self, msg): 
-        self.logs.append(f"[INFO] {msg}")
-    def warning(self, msg): 
-        self.logs.append(f"[WARN] {msg}")
-    def error(self, msg): 
-        self.logs.append(f"[ERROR] {msg}")
+    def __init__(self): self.logs = []
+    def debug(self, msg): pass
+    def info(self, msg): self.logs.append(f"[INFO] {msg}")
+    def warning(self, msg): self.logs.append(f"[WARN] {msg}")
+    def error(self, msg): self.logs.append(f"[ERROR] {msg}")
 
-# --- HELPER: GET METADATA ---
+# --- HELPERS: METADATA & PDF ---
 def get_video_info(youtube_url, cookies_file=None, proxy=None):
     logger = MyLogger()
-    ydl_opts = {
-        'quiet': True, 
-        'no_warnings': True, 
-        'logger': logger, 
-        'nocheckcertificate': True,
-    }
+    ydl_opts = {'quiet': True, 'no_warnings': True, 'logger': logger, 'nocheckcertificate': True}
     if cookies_file: ydl_opts['cookiefile'] = cookies_file
     if proxy: ydl_opts['proxy'] = proxy
-
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             return ydl.extract_info(youtube_url, download=False), None
     except Exception as e:
         return None, f"{str(e)}\n\nLogs:\n" + "\n".join(logger.logs)
+
+def create_pdf(image_buffers):
+    if not image_buffers: return None
+    output_path = os.path.join(tempfile.gettempdir(), "lecture_slides.pdf")
+    pil_images = []
+    for buf in image_buffers:
+        img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+        if img is None: continue
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        pil_images.append(Image.fromarray(img_rgb))
+    if pil_images:
+        pil_images[0].save(output_path, "PDF", resolution=100.0, save_all=True, append_images=pil_images[1:])
+        return output_path
+    return None
 
 def fmt_time(seconds):
     mins, secs = divmod(seconds, 60)
@@ -119,7 +113,6 @@ if st.button("Fetch Info 🔎"):
     else:
         with st.spinner("Fetching video info..."):
             info, error_msg = get_video_info(url, cookies_file=cookies_path, proxy=proxy_url)
-            
             if info:
                 st.session_state['video_info'] = info
                 st.session_state['url_input'] = url 
@@ -141,7 +134,7 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
         st.write(f"**Uploader:** {info.get('uploader', 'Unknown')}")
     
     # --- QUALITY SELECTION ---
-    st.subheader("2. Select Quality to Download")
+    st.subheader("2. Select Quality")
     formats = info.get('formats', [])
     unique_heights = set()
     for f in formats:
@@ -152,14 +145,17 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
     quality_options = {}
     for h in sorted_heights: 
         quality_options[f"{h}p"] = f"bestvideo[height<={h}]+bestaudio/best[height<={h}]"
-    
     quality_options["Best Available"] = "bestvideo+bestaudio/best"
-    quality_options["Audio Only (MP3)"] = "audio_only"
-
-    selected_q_label = st.selectbox("Choose quality:", list(quality_options.keys()))
     
-    if st.button("Download to Server ⬇️", type="primary"):
-        # Progress hooks
+    selected_q_label = st.selectbox("Choose quality:", list(quality_options.keys()))
+
+    # --- TIME RANGE SELECTION ---
+    st.subheader("3. Select Time Range to Scan")
+    start_val, end_val = st.slider("Drag sliders to select scan range:", min_value=0, max_value=duration, value=(0, duration), format="mm:ss")
+    st.info(f"⏱️ Will scan from **{fmt_time(start_val)}** to **{fmt_time(end_val)}**")
+    
+    if st.button("Download & Scan 🚀", type="primary"):
+        st.session_state['captured_images'] = []
         progress_bar = st.progress(0)
         status_text = st.empty()
         
@@ -173,22 +169,17 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                 except: pass
             elif d['status'] == 'finished':
                 progress_bar.progress(1.0)
-                status_text.text("Download complete. Processing...")
+                status_text.text("Download complete. Starting Scan...")
 
         # Setup Options
         format_str = quality_options[selected_q_label]
-        postprocessors = []
-        if "Audio Only" in selected_q_label:
-            format_str = 'bestaudio/best'
-            postprocessors = [{'key': 'FFmpegExtractAudio','preferredcodec': 'mp3','preferredquality': '192'}]
-
-        # Temporary Directory for Download
+        
+        # Temporary Directory for Download & Scan
         with tempfile.TemporaryDirectory() as tmp_dir:
             ydl_opts = {
                 'format': format_str,
                 'outtmpl': os.path.join(tmp_dir, '%(title)s.%(ext)s'),
                 'progress_hooks': [progress_hook],
-                'postprocessors': postprocessors,
                 'proxy': proxy_url,
                 'cookiefile': cookies_path,
                 'quiet': True,
@@ -196,25 +187,99 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
             }
 
             try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([url])
+                # 1. DOWNLOAD
+                with st.spinner("Downloading video to server..."):
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        ydl.download([url])
                 
                 # Check file
                 files = os.listdir(tmp_dir)
                 if files:
                     file_name = files[0]
                     file_path = os.path.join(tmp_dir, file_name)
-                    with open(file_path, "rb") as f:
-                        file_data = f.read()
                     
-                    st.success(f"✅ Downloaded '{file_name}' to server!")
-                    st.download_button(
-                        label="💾 Save to Local Device",
-                        data=file_data,
-                        file_name=file_name,
-                        mime="application/octet-stream"
-                    )
+                    # 2. SCANNING LOGIC (Using local file)
+                    status_text.info(f"📂 Scanning local file: {file_name}")
+                    
+                    cap = cv2.VideoCapture(file_path)
+                    if not cap.isOpened():
+                        st.error("Error opening downloaded video file.")
+                    else:
+                        fps = cap.get(cv2.CAP_PROP_FPS)
+                        if fps <= 0: fps = 30
+                        
+                        last_frame_data = None
+                        current_frame_pos = int(start_val * fps)
+                        end_frame_pos = int(end_val * fps)
+                        total_scan_frames = end_frame_pos - current_frame_pos
+                        
+                        # Set initial position
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_pos)
+                        
+                        # Image processing vars
+                        orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                        orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                        process_w = 640
+                        process_h = int(process_w * (orig_h / orig_w)) if orig_w > 0 else 360
+                        total_pixel_count = process_w * process_h
+                        motion_threshold_score = int(total_pixel_count * (strictness / 100) * 255)
+                        jump_small = int(fps * min_skip)
+                        jump_large = int(fps * max_skip)
+                        
+                        st.divider()
+                        st.subheader("Results")
+                        
+                        while current_frame_pos < end_frame_pos:
+                            cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_pos)
+                            ret, frame = cap.read()
+                            if not ret: break
+                            
+                            if total_scan_frames > 0:
+                                relative_pos = current_frame_pos - int(start_val * fps)
+                                progress_bar.progress(min(max(relative_pos / total_scan_frames, 0.0), 1.0))
+                                
+                            small_frame = cv2.resize(frame, (process_w, process_h))
+                            gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
+                            gray = cv2.GaussianBlur(gray, (21, 21), 0)
+                            
+                            found_new_slide = False
+                            if last_frame_data is None:
+                                found_new_slide = True
+                                last_frame_data = gray
+                            else:
+                                diff = cv2.absdiff(last_frame_data, gray)
+                                _, thresh = cv2.threshold(diff, sensitivity, 255, cv2.THRESH_BINARY)
+                                if np.sum(thresh) > motion_threshold_score:
+                                    found_new_slide = True
+                                    last_frame_data = gray
+                            
+                            if found_new_slide:
+                                retval, buffer = cv2.imencode('.jpg', frame)
+                                if retval:
+                                    st.session_state['captured_images'].append(buffer)
+                                
+                                time_str = fmt_time(current_frame_pos / fps)
+                                img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                                st.image(img_rgb, caption=f"Slide #{len(st.session_state['captured_images'])} at {time_str}", channels="RGB")
+                                current_frame_pos += jump_large 
+                            else:
+                                current_frame_pos += jump_small
+                        
+                        cap.release()
+                        progress_bar.empty()
+                        status_text.success(f"✅ Scanning Complete! Found {len(st.session_state['captured_images'])} slides.")
                 else:
-                    st.error("Download finished but file not found.")
+                    st.error("Download finished but file not found on server.")
             except Exception as e:
-                st.error(f"Download failed: {e}")
+                st.error(f"Process failed: {e}")
+
+    # --- RESULT DOWNLOADS ---
+    if len(st.session_state.get('captured_images', [])) > 0:
+        st.divider()
+        st.success(f"🎉 **Results Ready:** {len(st.session_state['captured_images'])} Slides Captured")
+        
+        st.subheader("📄 Download PDF")
+        pdf_path = create_pdf(st.session_state['captured_images'])
+        if pdf_path and os.path.exists(pdf_path):
+            with open(pdf_path, "rb") as f:
+                st.download_button("Download PDF", f.read(), "slides.pdf", "application/pdf")
