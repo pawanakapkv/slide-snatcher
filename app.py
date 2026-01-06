@@ -84,16 +84,23 @@ class MyLogger:
     def warning(self, msg): print(f"[YTDLP-WARN] {msg}"); sys.stdout.flush()
     def error(self, msg): print(f"[YTDLP-ERROR] {msg}"); sys.stdout.flush()
 
-# --- HELPER 1: GET METADATA ---
-def get_video_info(youtube_url, cookies_file=None):
-    ydl_opts = {
+# --- COMMON YTDLP OPTIONS ---
+def get_common_opts(cookies_file=None):
+    opts = {
         'quiet': True, 
         'no_warnings': True, 
         'logger': MyLogger(), 
         'nocheckcertificate': True,
         'source_address': '0.0.0.0', # Force IPv4
+        # CRITICAL FIX: Use 'android' client to avoid SABR/403 errors on cloud IPs
+        'extractor_args': {'youtube': {'player_client': ['android']}},
     }
-    if cookies_file: ydl_opts['cookiefile'] = cookies_file
+    if cookies_file: opts['cookiefile'] = cookies_file
+    return opts
+
+# --- HELPER 1: GET METADATA ---
+def get_video_info(youtube_url, cookies_file=None):
+    ydl_opts = get_common_opts(cookies_file)
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             return ydl.extract_info(youtube_url, download=False)
@@ -102,18 +109,10 @@ def get_video_info(youtube_url, cookies_file=None):
 
 # --- HELPER 2: GET STREAM URL (NO DOWNLOAD) ---
 def get_stream_url(youtube_url, format_str, cookies_file=None):
-    ydl_opts = {
-        'quiet': True, 
-        'no_warnings': True, 
-        'nocheckcertificate': True, 
-        'ignoreerrors': True, 
-        'logger': MyLogger(), 
-        'format': format_str,
-        'source_address': '0.0.0.0', # Force IPv4 to avoid IPv6 blocks
-        # Add User-Agent to look like a real browser
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-    }
-    if cookies_file: ydl_opts['cookiefile'] = cookies_file
+    ydl_opts = get_common_opts(cookies_file)
+    ydl_opts['format'] = format_str
+    ydl_opts['ignoreerrors'] = True
+    
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(youtube_url, download=False)
