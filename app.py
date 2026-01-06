@@ -1,337 +1,370 @@
-import streamlit as st
-import cv2
-import yt_dlp
-import numpy as np
-import os
-import tempfile
-import shutil
-from PIL import Image
+import React, { useState, useEffect, useRef } from 'react';
+import { Download, AlertCircle, CheckCircle, Server, Terminal, RotateCcw, Play, Wifi } from 'lucide-react';
 
-# 1. PAGE CONFIGURATION
-st.set_page_config(page_title="Slide Snatcher", layout="wide")
-st.title("📸 YouTube Slide Snatcher")
-st.markdown("Step 1: Download video segment. Step 2: Auto-scan for slides.")
+export default function App() {
+  const [url, setUrl] = useState('');
+  const [status, setStatus] = useState('idle'); // idle, connecting, downloading, processing, complete, error
+  const [progress, setProgress] = useState(0);
+  const [currentAction, setCurrentAction] = useState('Idle'); // New state for granular status text
+  const [logs, setLogs] = useState([]);
+  const [simulateStuck, setSimulateStuck] = useState(false);
+  
+  const logContainerRef = useRef(null);
 
-# Check for FFmpeg
-if not shutil.which('ffmpeg'):
-    st.warning("⚠️ FFmpeg is not installed. Video processing might fail.")
-
-# --- SESSION STATE INITIALIZATION ---
-if 'video_info' not in st.session_state:
-    st.session_state['video_info'] = None
-if 'url_input' not in st.session_state:
-    st.session_state['url_input'] = ""
-if 'captured_images' not in st.session_state:
-    st.session_state['captured_images'] = []
-
-# --------------------------------------------------------------------------
-# SETTINGS (SIDEBAR)
-# --------------------------------------------------------------------------
-with st.sidebar:
-    st.header("⚙️ Settings")
-    
-    st.subheader("🔍 Detection Settings")
-    sensitivity = st.slider("Color Sensitivity", min_value=10, max_value=100, value=35, help="Higher = less sensitive to small color changes")
-    strictness = st.slider("Strictness (%)", min_value=0.1, max_value=100.0, value=1.0, step=0.1, help="Percentage of screen that must change to trigger capture")
-    
-    st.divider()
-    st.subheader("⏩ Speed")
-    min_skip = st.slider("Min Jump (Seconds)", 1, 5, 2)
-    max_skip = st.slider("Max Jump (Seconds)", 5, 30, 10)
-
-# --------------------------------------------------------------------------
-# PROXY & AUTH LOGIC
-# --------------------------------------------------------------------------
-proxy_url = st.secrets.get("proxy_url", None)
-
-def get_cookies_path(text_input, uploaded_file):
-    """
-    Returns path to a temp cookie file. 
-    Priority: 1. Paste Text, 2. Uploaded File, 3. st.secrets, 4. None
-    """
-    try:
-        content = None
-        
-        # PRIORITY 1: Pasted Text
-        if text_input and len(text_input.strip()) > 0:
-            content = text_input
-            
-        # PRIORITY 2: Manual Upload
-        elif uploaded_file is not None:
-            content = uploaded_file.getvalue().decode("utf-8")
-
-        # PRIORITY 3: Secrets
-        elif "cookies" in st.secrets:
-            content = st.secrets["cookies"]
-
-        # Write to temp file if we found content
-        if content:
-            fp = tempfile.NamedTemporaryFile(delete=False, suffix='.txt', mode='w', encoding='utf-8')
-            fp.write(content)
-            fp.close()
-            return fp.name
-            
-    except Exception as e:
-        st.error(f"Error processing cookies: {e}")
-        return None
-    
-    return None
-
-# --- LOGGING ---
-class MyLogger:
-    def __init__(self): self.logs = []
-    def debug(self, msg): pass
-    def info(self, msg): self.logs.append(f"[INFO] {msg}")
-    def warning(self, msg): self.logs.append(f"[WARN] {msg}")
-    def error(self, msg): self.logs.append(f"[ERROR] {msg}")
-
-# --- HELPERS: METADATA & PDF ---
-def get_video_info(youtube_url, cookies_file=None, proxy=None):
-    logger = MyLogger()
-    # Robust options for fetching metadata
-    ydl_opts = {
-        'quiet': True, 
-        'no_warnings': True, 
-        'logger': logger, 
-        'nocheckcertificate': True,
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+  // Auto-scroll logs
+  useEffect(() => {
+    if (logContainerRef.current) {
+      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
     }
-    if cookies_file: ydl_opts['cookiefile'] = cookies_file
-    if proxy: ydl_opts['proxy'] = proxy
+  }, [logs]);
+
+  const addLog = (message, type = 'info') => {
+    const timestamp = new Date().toLocaleTimeString();
+    setLogs(prev => [...prev, { time: timestamp, message, type }]);
+  };
+
+  const handleDownload = () => {
+    if (!url) {
+      addLog('Please enter a valid URL first.', 'error');
+      return;
+    }
+
+    setStatus('connecting');
+    setProgress(0);
+    setCurrentAction('Initializing connection...');
+    setLogs([]);
+    addLog(`Initializing download for: ${url}`);
     
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            return ydl.extract_info(youtube_url, download=False), None
-    except Exception as e:
-        return None, f"{str(e)}\n\nLogs:\n" + "\n".join(logger.logs)
+    // Simulation Logic
+    setTimeout(() => {
+      startDownloadSequence();
+    }, 1000);
+  };
 
-def create_pdf(image_buffers):
-    if not image_buffers: return None
-    output_path = os.path.join(tempfile.gettempdir(), "lecture_slides.pdf")
-    pil_images = []
-    for buf in image_buffers:
-        img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
-        if img is None: continue
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        pil_images.append(Image.fromarray(img_rgb))
-    if pil_images:
-        pil_images[0].save(output_path, "PDF", resolution=100.0, save_all=True, append_images=pil_images[1:])
-        return output_path
-    return None
+  const startDownloadSequence = () => {
+    setStatus('downloading');
+    setCurrentAction('Connected. Requesting metadata...');
+    addLog('Connected to backend server.', 'success');
+    addLog('Requesting video metadata...');
 
-def fmt_time(seconds):
-    mins, secs = divmod(seconds, 60)
-    hours, mins = divmod(mins, 60); 
-    if hours > 0: return f"{int(hours)}h {int(mins)}m {int(secs)}s"
-    return f"{int(mins)}m {int(secs)}s"
+    let currentProgress = 0;
+    const interval = setInterval(() => {
+      
+      // LOGIC FOR STUCK SIMULATION
+      if (simulateStuck && currentProgress >= 45) {
+        clearInterval(interval);
+        setCurrentAction('Waiting for server response...');
+        addLog('WARNING: Server response delayed...', 'warning');
+        setTimeout(() => {
+          setStatus('error');
+          setCurrentAction('Connection Timed Out');
+          addLog('ERROR: Gateway Timeout (504). Server took too long to respond.', 'error');
+          addLog('Troubleshooting: Check server bandwidth or increase timeout limits.', 'info');
+        }, 3000);
+        return;
+      }
 
-# 4. MAIN APP INTERFACE
-url = st.text_input("1. Enter YouTube URL:", value=st.session_state['url_input'], placeholder="https://www.youtube.com/watch?v=...")
-
-# --- COOKIE SECTION (Moved to Main Area) ---
-with st.expander("🍪 Authentication (Fix 'Sign in' errors)", expanded=False):
-    st.info("If you see a 'Sign in to confirm you're not a bot' error, paste your cookies below.")
-    col1, col2 = st.columns(2)
-    with col1:
-        cookie_text_input = st.text_area("Paste Cookies Text (Netscape Format)", height=150, help="Paste the content of your cookies.txt here.")
-    with col2:
-        uploaded_cookies = st.file_uploader("Or Upload cookies.txt", type=["txt"])
-
-# Resolve cookies path immediately
-cookies_path = get_cookies_path(cookie_text_input, uploaded_cookies)
-
-if st.button("Fetch Info 🔎"):
-    if not url:
-        st.error("Please enter a URL.")
-    else:
-        with st.spinner("Fetching video info..."):
-            info, error_msg = get_video_info(url, cookies_file=cookies_path, proxy=proxy_url)
-            if info:
-                st.session_state['video_info'] = info
-                st.session_state['url_input'] = url 
-                st.rerun() 
-            else:
-                st.error(f"❌ Could not find video. Error details:\n\n{error_msg}")
-
-if st.session_state['video_info'] and url == st.session_state['url_input']:
-    info = st.session_state['video_info']
-    
-    st.divider()
-    col_a, col_b = st.columns([1, 3])
-    with col_a:
-        if info.get('thumbnail'): st.image(info['thumbnail'], use_container_width=True)
-    with col_b:
-        st.subheader(info.get('title', 'Unknown'))
-        duration = info.get('duration', 0)
-        st.write(f"**Duration:** {fmt_time(duration)}")
-        st.write(f"**Uploader:** {info.get('uploader', 'Unknown')}")
-    
-    # --- QUALITY SELECTION ---
-    st.subheader("2. Select Quality")
-    formats = info.get('formats', [])
-    unique_heights = set()
-    for f in formats:
-        if f.get('vcodec') != 'none' and f.get('height'): 
-            unique_heights.add(f['height'])
-    sorted_heights = sorted(unique_heights, reverse=True)
-    
-    quality_options = {}
-    for h in sorted_heights: 
-        quality_options[f"{h}p"] = f"bestvideo[height<={h}]+bestaudio/best[height<={h}]"
-    quality_options["Best Available"] = "bestvideo+bestaudio/best"
-    
-    selected_q_label = st.selectbox("Choose quality:", list(quality_options.keys()))
-
-    # --- TIME RANGE SELECTION ---
-    st.subheader("3. Select Time Range to Scan")
-    start_val, end_val = st.slider("Drag sliders to select scan range:", min_value=0, max_value=duration, value=(0, duration), format="mm:ss")
-    st.info(f"⏱️ Will download and scan only from **{fmt_time(start_val)}** to **{fmt_time(end_val)}**")
-    
-    if st.button("Download & Scan 🚀", type="primary"):
-        st.session_state['captured_images'] = []
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+      // NORMAL DOWNLOAD SIMULATION
+      currentProgress += Math.floor(Math.random() * 5) + 1;
+      
+      if (currentProgress <= 50) {
+        // Phase 1: Downloading to Server (0-50% Global)
+        // Map 0-50 global to 0-100 local for display logic if needed
         
-        def progress_hook(d):
-            if d['status'] == 'downloading':
-                try:
-                    p = d.get('_percent_str', '0%').replace('%', '')
-                    if p and p != 'N/A':
-                        progress_bar.progress(min(float(p) / 100, 1.0))
-                    status_text.text(f"Downloading: {d.get('_percent_str')} - ETA: {d.get('_eta_str')}")
-                except: pass
-            elif d['status'] == 'finished':
-                progress_bar.progress(1.0)
-                status_text.text("Download complete. Starting Scan...")
+        if (currentProgress > 0 && currentProgress < 10) setCurrentAction('Allocating server resources...');
+        if (currentProgress === 10) {
+           const msg = 'Stream detected: 1080p/MP4';
+           addLog(msg);
+           setCurrentAction(msg);
+        }
+        if (currentProgress >= 15 && currentProgress < 25) {
+           const msg = 'Downloading segment 1/4...';
+           if (currentAction !== msg) { addLog(msg); setCurrentAction(msg); }
+        }
+        if (currentProgress >= 25 && currentProgress < 35) {
+           const msg = 'Downloading segment 2/4...';
+           if (currentAction !== msg) { addLog(msg); setCurrentAction(msg); }
+        }
+        if (currentProgress >= 35 && currentProgress < 45) {
+           const msg = 'Downloading segment 3/4...';
+           if (currentAction !== msg) { addLog(msg); setCurrentAction(msg); }
+        }
+        if (currentProgress >= 45) {
+           const msg = 'Downloading segment 4/4...';
+           if (currentAction !== msg) { addLog(msg); setCurrentAction(msg); }
+        }
 
-        # Setup Options
-        format_str = quality_options[selected_q_label]
+      } else if (currentProgress <= 90) {
+        // Phase 2: Processing (51-90% Global)
+        if (status !== 'processing' && currentProgress > 50) {
+          setStatus('processing');
+          const msg = 'Segments acquired. Merging files...';
+          addLog(msg, 'info');
+          setCurrentAction(msg);
+        }
+        if (currentProgress >= 60 && currentProgress < 70) {
+           const msg = 'Transcoding audio stream (AAC)...';
+           if (currentAction !== msg) { addLog(msg); setCurrentAction(msg); }
+        }
+        if (currentProgress >= 70 && currentProgress < 80) {
+           const msg = 'Encoding video container...';
+           if (currentAction !== msg) { addLog(msg); setCurrentAction(msg); }
+        }
+        if (currentProgress >= 80) {
+           const msg = 'Finalizing file structure...';
+           if (currentAction !== msg) { addLog(msg); setCurrentAction(msg); }
+        }
+      } else {
+        // Phase 3: Complete
+        clearInterval(interval);
+        setProgress(100);
+        setStatus('complete');
+        setCurrentAction('Ready for download');
+        addLog('Download ready. Sending to client.', 'success');
+        return;
+      }
+
+      setProgress(Math.min(currentProgress, 99));
+    }, 200);
+  };
+
+  const reset = () => {
+    setStatus('idle');
+    setProgress(0);
+    setCurrentAction('Idle');
+    setLogs([]);
+    setUrl('');
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-200 font-sans p-4 md:p-8 flex items-center justify-center">
+      <div className="max-w-3xl w-full bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden">
         
-        def download_range_func(info_dict, ydl):
-            return [{'start_time': start_val, 'end_time': end_val}]
+        {/* Header */}
+        <div className="bg-slate-800/50 p-6 border-b border-slate-700 flex justify-between items-center">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-blue-500/20 rounded-lg">
+              <Download className="w-6 h-6 text-blue-400" />
+            </div>
+            <div>
+              <h1 className="text-xl font-bold text-white">Server-Side Downloader</h1>
+              <p className="text-xs text-slate-400">Simulate backend video processing states</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 text-xs font-mono bg-black/30 px-3 py-1 rounded-full border border-slate-700">
+            <div className={`w-2 h-2 rounded-full ${status === 'idle' ? 'bg-slate-500' : 'bg-green-500 animate-pulse'}`}></div>
+            {status === 'idle' ? 'IDLE' : 'ACTIVE'}
+          </div>
+        </div>
 
-        # Temporary Directory for Download & Scan
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            ydl_opts = {
-                'format': format_str,
-                'outtmpl': os.path.join(tmp_dir, '%(title)s.%(ext)s'),
-                'progress_hooks': [progress_hook],
-                'proxy': proxy_url,
-                'cookiefile': cookies_path, # Uses uploaded file or secret
-                'quiet': True,
-                'no_warnings': True,
-                'download_ranges': download_range_func,
-                'force_keyframes_at_cuts': True,
-                # FIXED: Options to avoid blocking
-                'nocheckcertificate': True,
-                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            }
+        <div className="p-6 space-y-8">
+          
+          {/* Input Section */}
+          <div className="space-y-4">
+            <label className="block text-sm font-medium text-slate-400">Target Video URL</label>
+            <div className="flex gap-2">
+              <input 
+                type="text" 
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder="https://example.com/video/watch?v=..." 
+                className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-blue-500 transition-colors placeholder:text-slate-600"
+                disabled={status !== 'idle'}
+              />
+              {status === 'idle' ? (
+                <button 
+                  onClick={handleDownload}
+                  className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-2 rounded-lg font-medium transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Play className="w-4 h-4" /> Start
+                </button>
+              ) : (
+                <button 
+                  onClick={reset}
+                  className="bg-slate-700 hover:bg-slate-600 text-white px-6 py-2 rounded-lg font-medium transition-colors flex items-center gap-2"
+                >
+                  <RotateCcw className="w-4 h-4" /> Reset
+                </button>
+              )}
+            </div>
+            
+            {/* Simulation Controls */}
+            {status === 'idle' && (
+              <div className="flex items-center gap-2">
+                <input 
+                  type="checkbox" 
+                  id="simulateStuck" 
+                  checked={simulateStuck} 
+                  onChange={(e) => setSimulateStuck(e.target.checked)}
+                  className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-blue-600 focus:ring-offset-slate-900" 
+                />
+                <label htmlFor="simulateStuck" className="text-xs text-amber-400 select-none cursor-pointer">
+                  Simulate "Stuck at 45%" Error (Replicates your issue)
+                </label>
+              </div>
+            )}
+          </div>
 
-            try:
-                # 1. DOWNLOAD
-                with st.spinner("Downloading video segment to server..."):
-                    try:
-                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                            ydl.download([url])
-                    except Exception as e:
-                        # FALLBACK: If cookies failed, try without them
-                        if "cookie" in str(e).lower() or "Sign in" in str(e):
-                            st.warning("⚠️ Cookie auth failed. Retrying without cookies...")
-                            if 'cookiefile' in ydl_opts: del ydl_opts['cookiefile']
-                            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                                ydl.download([url])
-                        else:
-                            raise e
-                
-                # Check file
-                files = os.listdir(tmp_dir)
-                if files:
-                    file_name = files[0]
-                    file_path = os.path.join(tmp_dir, file_name)
-                    
-                    # 2. SCANNING LOGIC (Using local file)
-                    status_text.info(f"📂 Scanning local file: {file_name}")
-                    
-                    cap = cv2.VideoCapture(file_path)
-                    if not cap.isOpened():
-                        st.error("Error opening downloaded video file.")
-                    else:
-                        fps = cap.get(cv2.CAP_PROP_FPS)
-                        if fps <= 0: fps = 30
-                        
-                        last_frame_data = None
-                        current_frame_pos = 0 
-                        total_frames_in_file = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                        end_frame_pos = total_frames_in_file
-                        
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                        
-                        orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                        orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                        process_w = 640
-                        process_h = int(process_w * (orig_h / orig_w)) if orig_w > 0 else 360
-                        total_pixel_count = process_w * process_h
-                        motion_threshold_score = int(total_pixel_count * (strictness / 100) * 255)
-                        jump_small = int(fps * min_skip)
-                        jump_large = int(fps * max_skip)
-                        
-                        st.divider()
-                        st.subheader("Results")
-                        
-                        while current_frame_pos < end_frame_pos:
-                            cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_pos)
-                            ret, frame = cap.read()
-                            if not ret: break
-                            
-                            if total_frames_in_file > 0:
-                                progress_bar.progress(min(current_frame_pos / total_frames_in_file, 1.0))
-                                
-                            small_frame = cv2.resize(frame, (process_w, process_h))
-                            gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
-                            gray = cv2.GaussianBlur(gray, (21, 21), 0)
-                            
-                            found_new_slide = False
-                            if last_frame_data is None:
-                                found_new_slide = True
-                                last_frame_data = gray
-                            else:
-                                diff = cv2.absdiff(last_frame_data, gray)
-                                _, thresh = cv2.threshold(diff, sensitivity, 255, cv2.THRESH_BINARY)
-                                if np.sum(thresh) > motion_threshold_score:
-                                    found_new_slide = True
-                                    last_frame_data = gray
-                            
-                            if found_new_slide:
-                                retval, buffer = cv2.imencode('.jpg', frame)
-                                if retval:
-                                    st.session_state['captured_images'].append(buffer)
-                                
-                                # Correct timestamp: File Time + Original Start Time
-                                current_file_time = current_frame_pos / fps
-                                actual_video_time = current_file_time + start_val
-                                time_str = fmt_time(actual_video_time)
-                                
-                                img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                                st.image(img_rgb, caption=f"Slide #{len(st.session_state['captured_images'])} at {time_str}", channels="RGB")
-                                current_frame_pos += jump_large 
-                            else:
-                                current_frame_pos += jump_small
-                        
-                        cap.release()
-                        progress_bar.empty()
-                        status_text.success(f"✅ Scanning Complete! Found {len(st.session_state['captured_images'])} slides.")
-                else:
-                    st.error("Download finished but file not found on server.")
-            except Exception as e:
-                st.error(f"Process failed: {e}")
+          {/* Status Display */}
+          {status !== 'idle' && (
+            <div className="space-y-6 animate-in fade-in slide-in-from-top-4 duration-500">
+              
+              {/* Progress Bar & Current Action */}
+              <div className="bg-slate-800/30 rounded-xl p-4 border border-slate-700/50 space-y-3">
+                <div className="flex justify-between items-end">
+                  <div className="space-y-1">
+                    <div className="text-xs uppercase tracking-wider font-bold text-slate-500">Current Status</div>
+                    <div className={`text-sm font-medium font-mono ${status === 'error' ? 'text-red-400' : 'text-blue-400'}`}>
+                       {status === 'error' ? 'Failed' : currentAction}
+                    </div>
+                  </div>
+                  <div className="text-2xl font-bold text-white">{progress}%</div>
+                </div>
 
-    # --- RESULT DOWNLOADS ---
-    if len(st.session_state.get('captured_images', [])) > 0:
-        st.divider()
-        st.success(f"🎉 **Results Ready:** {len(st.session_state['captured_images'])} Slides Captured")
-        
-        st.subheader("📄 Download PDF")
-        pdf_path = create_pdf(st.session_state['captured_images'])
-        if pdf_path and os.path.exists(pdf_path):
-            with open(pdf_path, "rb") as f:
-                st.download_button("Download PDF", f.read(), "slides.pdf", "application/pdf")
+                <div className="h-3 bg-slate-800 rounded-full overflow-hidden border border-slate-700">
+                  <div 
+                    className={`h-full transition-all duration-300 ease-out relative ${
+                      status === 'error' ? 'bg-red-500' : 
+                      status === 'complete' ? 'bg-green-500' : 
+                      'bg-gradient-to-r from-blue-600 to-cyan-400'
+                    }`} 
+                    style={{ width: `${progress}%` }}
+                  >
+                    {/* Striped Animation overlay */}
+                    {status !== 'error' && status !== 'complete' && (
+                      <div className="absolute inset-0 bg-white/20" style={{
+                        backgroundImage: 'linear-gradient(45deg,rgba(255,255,255,.15) 25%,transparent 25%,transparent 50%,rgba(255,255,255,.15) 50%,rgba(255,255,255,.15) 75%,transparent 75%,transparent)',
+                        backgroundSize: '1rem 1rem',
+                      }}></div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Steps Visualizer */}
+              <div className="grid grid-cols-3 gap-4">
+                <StepCard 
+                  icon={Wifi} 
+                  label="Connect" 
+                  active={status === 'connecting' || progress > 0} 
+                  completed={progress > 10}
+                  error={status === 'error' && progress < 10}
+                />
+                <StepCard 
+                  icon={Server} 
+                  label="Download" 
+                  active={status === 'downloading'} 
+                  completed={progress > 50}
+                  error={status === 'error' && progress <= 50}
+                  // Calculate local percentage for download phase (0-50 global = 0-100 local)
+                  details={status === 'downloading' ? `${Math.min(100, Math.floor((progress / 50) * 100))}%` : null}
+                />
+                <StepCard 
+                  icon={CheckCircle} 
+                  label="Process" 
+                  active={status === 'processing'} 
+                  completed={status === 'complete'}
+                  error={status === 'error' && progress > 50}
+                   // Calculate local percentage for processing phase (50-90 global = 0-100 local approximately)
+                  details={status === 'processing' ? `${Math.min(100, Math.floor(((progress - 50) / 40) * 100))}%` : null}
+                />
+              </div>
+
+              {/* Terminal Logs */}
+              <div className="bg-black rounded-lg border border-slate-800 overflow-hidden font-mono text-xs">
+                <div className="bg-slate-900/50 px-4 py-2 border-b border-slate-800 flex items-center gap-2 text-slate-500">
+                  <Terminal className="w-3 h-3" />
+                  <span>server_logs.log</span>
+                </div>
+                <div ref={logContainerRef} className="p-4 h-48 overflow-y-auto space-y-1">
+                  {logs.map((log, i) => (
+                    <div key={i} className="flex gap-3">
+                      <span className="text-slate-600 shrink-0">[{log.time}]</span>
+                      <span className={`${
+                        log.type === 'error' ? 'text-red-400' : 
+                        log.type === 'success' ? 'text-green-400' : 
+                        log.type === 'warning' ? 'text-amber-400' : 
+                        'text-slate-300'
+                      }`}>
+                        {log.type === 'error' && '✖ '}
+                        {log.type === 'success' && '✓ '}
+                        {log.type === 'warning' && '⚠ '}
+                        {log.message}
+                      </span>
+                    </div>
+                  ))}
+                  {status === 'downloading' && (
+                    <div className="animate-pulse text-blue-400">_</div>
+                  )}
+                </div>
+              </div>
+
+              {/* Result Actions */}
+              {status === 'complete' && (
+                <div className="flex justify-center pt-2">
+                   <button className="bg-green-600 hover:bg-green-500 text-white px-8 py-3 rounded-xl font-bold shadow-lg shadow-green-900/20 transition-all transform hover:scale-105 flex items-center gap-2">
+                     <Download className="w-5 h-5" /> Save File to Disk
+                   </button>
+                </div>
+              )}
+
+              {status === 'error' && (
+                <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-4 flex items-start gap-3">
+                  <AlertCircle className="w-5 h-5 text-red-400 mt-0.5" />
+                  <div>
+                    <h3 className="text-red-400 font-semibold text-sm">Download Failed</h3>
+                    <p className="text-red-400/80 text-xs mt-1">The server connection timed out while downloading the segment. This usually happens when the source video is too large or the server bandwidth is throttled.</p>
+                  </div>
+                </div>
+              )}
+
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StepCard({ icon: Icon, label, active, completed, error, details }) {
+  return (
+    <div className={`
+      relative p-4 rounded-xl border flex flex-col items-center gap-2 transition-all duration-300
+      ${error ? 'bg-red-500/5 border-red-500/30' : 
+        completed ? 'bg-green-500/5 border-green-500/30' : 
+        active ? 'bg-blue-500/5 border-blue-500/30 scale-105 shadow-lg shadow-blue-900/20' : 
+        'bg-slate-900 border-slate-800 opacity-50'}
+    `}>
+      <div className={`
+        p-2 rounded-lg 
+        ${error ? 'bg-red-500/20 text-red-400' :
+          completed ? 'bg-green-500/20 text-green-400' : 
+          active ? 'bg-blue-500/20 text-blue-400' : 
+          'bg-slate-800 text-slate-500'}
+      `}>
+        <Icon className="w-5 h-5" />
+      </div>
+      <div className="flex flex-col items-center">
+        <span className={`
+          text-xs font-semibold
+          ${error ? 'text-red-400' :
+            completed ? 'text-green-400' : 
+            active ? 'text-blue-300' : 
+            'text-slate-500'}
+        `}>
+          {label}
+        </span>
+        {active && details && (
+          <span className="text-[10px] font-mono text-blue-400 bg-blue-500/10 px-2 py-0.5 mt-1 rounded-full animate-pulse">
+            {details}
+          </span>
+        )}
+      </div>
+      
+      {/* Connector Line (visual only) */}
+      {completed && (
+        <div className="absolute top-1/2 -right-4 w-8 h-[2px] bg-green-500/30 hidden md:block"></div>
+      )}
+    </div>
+  );
+}
