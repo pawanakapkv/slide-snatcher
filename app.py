@@ -6,7 +6,6 @@ import numpy as np
 import os
 import tempfile
 import sys
-import glob
 from PIL import Image
 
 # 1. PAGE CONFIGURATION
@@ -16,7 +15,7 @@ st.markdown("Paste a lecture link, **Select Quality**, set the **Time Range**, a
 
 # --- SESSION STATE INITIALIZATION ---
 if 'captured_images' not in st.session_state:
-    st.session_state['captured_images'] = [] # Now stores compressed JPG buffers
+    st.session_state['captured_images'] = [] # Stores compressed JPG buffers
 if 'video_info' not in st.session_state:
     st.session_state['video_info'] = None
 if 'url_input' not in st.session_state:
@@ -89,7 +88,7 @@ def get_stream_url(youtube_url, format_str, cookies_file=None):
     except Exception as e:
         print(f"Stream URL Exception: {e}"); return None, None
 
-# --- HELPER 3: CREATE SLIDESHOW VIDEO (Updated for Compressed Buffers) ---
+# --- HELPER 3: CREATE SLIDESHOW VIDEO ---
 def create_summary_video(image_buffers):
     if not image_buffers: return None
     temp_dir = tempfile.gettempdir()
@@ -103,10 +102,8 @@ def create_summary_video(image_buffers):
     out = cv2.VideoWriter(output_path, fourcc, 0.5, (width, height)) 
     
     for buf in image_buffers:
-        # Decode buffer back to image
         img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
         if img is None: continue
-        
         if img.shape[0] != height or img.shape[1] != width:
             img = cv2.resize(img, (width, height))
         out.write(img)
@@ -114,17 +111,15 @@ def create_summary_video(image_buffers):
     out.release()
     return output_path
 
-# --- HELPER 4: CREATE PDF (Updated for Compressed Buffers) ---
+# --- HELPER 4: CREATE PDF ---
 def create_pdf(image_buffers):
     if not image_buffers: return None
     output_path = os.path.join(tempfile.gettempdir(), "lecture_slides.pdf")
     pil_images = []
     
     for buf in image_buffers:
-        # Decode buffer back to image
         img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
         if img is None: continue
-        
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         pil_images.append(Image.fromarray(img_rgb))
         
@@ -162,7 +157,7 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
     st.divider()
     col_a, col_b = st.columns([1, 3])
     with col_a:
-        if info.get('thumbnail'): st.image(info['thumbnail'], use_container_width=True)
+        if info.get('thumbnail'): st.image(info['thumbnail'], width=None) # Default width
     with col_b:
         st.subheader(info.get('title', 'Unknown'))
         duration = info.get('duration', 0)
@@ -196,7 +191,6 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
 
     # LOGIC: Start Scan
     if start_btn:
-        # Reset Session Data for new run
         st.session_state['captured_images'] = []
         
         js = f"window.open('{ADSTERRA_DIRECT_LINK}', '_blank');"
@@ -212,10 +206,11 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
             st.error("Could not retrieve stream URL. YouTube might have blocked the IP.")
         else:
             status_text.info(f"🎥 Connecting to stream...")
-            cap = cv2.VideoCapture(stream_url)
+            # FIX: Explicitly use FFmpeg backend for Streamlit Cloud
+            cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
             
             if not cap.isOpened():
-                st.error("Error connecting to video stream.")
+                st.error("Error connecting to video stream. Try a different quality or check if ffmpeg is in packages.txt.")
             else:
                 fps = cap.get(cv2.CAP_PROP_FPS)
                 if fps <= 0 or fps > 120: fps = meta_fps if meta_fps else 30
@@ -247,12 +242,10 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                         ret, frame = cap.read()
                         if not ret: break 
                         
-                        # Progress Update
                         if total_scan_frames > 0:
                             relative_pos = current_frame_pos - int(start_val * fps)
                             progress_bar.progress(min(relative_pos / total_scan_frames, 1.0))
 
-                        # Detection Logic
                         small_frame = cv2.resize(frame, (process_w, process_h))
                         gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
                         gray = cv2.GaussianBlur(gray, (21, 21), 0)
@@ -269,12 +262,9 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                                 last_frame_data = gray
                         
                         if found_new_slide:
-                            # --- MEMORY OPTIMIZATION START ---
-                            # Encode to JPG to save ~90% RAM
                             retval, buffer = cv2.imencode('.jpg', frame)
                             if retval:
                                 st.session_state['captured_images'].append(buffer)
-                            # --- MEMORY OPTIMIZATION END ---
                             
                             time_str = fmt_time(current_frame_pos / fps)
                             img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -287,7 +277,7 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                     progress_bar.empty()
                     status_text.success(f"✅ Scanning Complete! Found {len(st.session_state['captured_images'])} slides.")
 
-    # --- RESULT DISPLAY (Runs on completion OR after Stop is clicked) ---
+    # --- RESULT DISPLAY ---
     if len(st.session_state.get('captured_images', [])) > 0:
         if stop_btn:
              st.warning("⚠️ Scanning stopped by user. Showing results captured so far...")
@@ -298,7 +288,6 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
         
         with col1:
             st.subheader("📄 Download PDF")
-            # PDF function now handles buffers
             pdf_path = create_pdf(st.session_state['captured_images'])
             if pdf_path and os.path.exists(pdf_path):
                 with open(pdf_path, "rb") as f:
@@ -306,7 +295,6 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
 
         with col2:
             st.subheader("⏩ Download Video")
-            # Video function now handles buffers
             summary_path = create_summary_video(st.session_state['captured_images'])
             if summary_path and os.path.exists(summary_path):
                 with open(summary_path, "rb") as f:
