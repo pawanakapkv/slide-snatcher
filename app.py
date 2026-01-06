@@ -189,20 +189,39 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
     
     if st.button("Download & Scan 🚀", type="primary"):
         st.session_state['captured_images'] = []
-        progress_bar = st.progress(0)
-        status_text = st.empty()
         
+        # --- UI ELEMENTS FOR PROGRESS ---
+        st.write("### ⬇️ Downloading Video...")
+        download_progress_bar = st.progress(0)
+        download_status_text = st.empty()
+        
+        # Hook for yt_dlp
         def progress_hook(d):
             if d['status'] == 'downloading':
                 try:
-                    p = d.get('_percent_str', '0%').replace('%', '')
-                    if p and p != 'N/A':
-                        progress_bar.progress(min(float(p) / 100, 1.0))
-                    status_text.text(f"Downloading: {d.get('_percent_str')} - ETA: {d.get('_eta_str')}")
-                except: pass
+                    # Calculate percentage based on bytes if available
+                    total = d.get('total_bytes') or d.get('total_bytes_estimate')
+                    downloaded = d.get('downloaded_bytes', 0)
+                    
+                    if total:
+                        percent = downloaded / total
+                        download_progress_bar.progress(min(percent, 1.0))
+                        
+                        # Format status string
+                        eta = d.get('eta', 0)
+                        speed = d.get('speed', 0)
+                        speed_str = f"{speed/1024/1024:.1f} MB/s" if speed else "N/A"
+                        download_status_text.text(f"Downloaded: {percent:.1%} | Speed: {speed_str} | ETA: {eta}s")
+                    else:
+                        # Fallback to string parsing if bytes are missing
+                        p_str = d.get('_percent_str', '0%').replace('%', '')
+                        download_status_text.text(f"Downloading... {p_str}%")
+                        
+                except Exception as e:
+                    pass
             elif d['status'] == 'finished':
-                progress_bar.progress(1.0)
-                status_text.text("Download complete. Starting Scan...")
+                download_progress_bar.progress(1.0)
+                download_status_text.success("✅ Download complete! Starting processing...")
 
         # Setup Options
         format_str = quality_options[selected_q_label]
@@ -217,31 +236,30 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                 'outtmpl': os.path.join(tmp_dir, '%(title)s.%(ext)s'),
                 'progress_hooks': [progress_hook],
                 'proxy': proxy_url,
-                'cookiefile': cookies_path, # Uses uploaded file or secret
+                'cookiefile': cookies_path, 
                 'quiet': True,
                 'no_warnings': True,
                 'download_ranges': download_range_func,
                 'force_keyframes_at_cuts': True,
-                # FIXED: Options to avoid blocking
                 'nocheckcertificate': True,
                 'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             }
 
             try:
                 # 1. DOWNLOAD
-                with st.spinner("Downloading video segment to server..."):
-                    try:
+                # st.spinner is removed here to let the progress bar show clearly
+                try:
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        ydl.download([url])
+                except Exception as e:
+                    # FALLBACK
+                    if "cookie" in str(e).lower() or "Sign in" in str(e):
+                        st.warning("⚠️ Cookie auth failed. Retrying without cookies...")
+                        if 'cookiefile' in ydl_opts: del ydl_opts['cookiefile']
                         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                             ydl.download([url])
-                    except Exception as e:
-                        # FALLBACK: If cookies failed, try without them
-                        if "cookie" in str(e).lower() or "Sign in" in str(e):
-                            st.warning("⚠️ Cookie auth failed. Retrying without cookies...")
-                            if 'cookiefile' in ydl_opts: del ydl_opts['cookiefile']
-                            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                                ydl.download([url])
-                        else:
-                            raise e
+                    else:
+                        raise e
                 
                 # Check file
                 files = os.listdir(tmp_dir)
@@ -249,8 +267,13 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                     file_name = files[0]
                     file_path = os.path.join(tmp_dir, file_name)
                     
-                    # 2. SCANNING LOGIC (Using local file)
-                    status_text.info(f"📂 Scanning local file: {file_name}")
+                    # 2. SCANNING LOGIC
+                    st.divider()
+                    st.write("### 👁️ Scanning for Slides...")
+                    scan_progress_bar = st.progress(0)
+                    scan_status_text = st.empty()
+                    
+                    scan_status_text.info(f"📂 processing local file: {file_name}")
                     
                     cap = cv2.VideoCapture(file_path)
                     if not cap.isOpened():
@@ -275,7 +298,6 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                         jump_small = int(fps * min_skip)
                         jump_large = int(fps * max_skip)
                         
-                        st.divider()
                         st.subheader("Results")
                         
                         while current_frame_pos < end_frame_pos:
@@ -283,8 +305,9 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                             ret, frame = cap.read()
                             if not ret: break
                             
+                            # Update Scan Progress
                             if total_frames_in_file > 0:
-                                progress_bar.progress(min(current_frame_pos / total_frames_in_file, 1.0))
+                                scan_progress_bar.progress(min(current_frame_pos / total_frames_in_file, 1.0))
                                 
                             small_frame = cv2.resize(frame, (process_w, process_h))
                             gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
@@ -306,7 +329,7 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                                 if retval:
                                     st.session_state['captured_images'].append(buffer)
                                 
-                                # Correct timestamp: File Time + Original Start Time
+                                # Correct timestamp
                                 current_file_time = current_frame_pos / fps
                                 actual_video_time = current_file_time + start_val
                                 time_str = fmt_time(actual_video_time)
@@ -318,8 +341,8 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                                 current_frame_pos += jump_small
                         
                         cap.release()
-                        progress_bar.empty()
-                        status_text.success(f"✅ Scanning Complete! Found {len(st.session_state['captured_images'])} slides.")
+                        scan_progress_bar.progress(1.0)
+                        scan_status_text.success(f"✅ Scanning Complete! Found {len(st.session_state['captured_images'])} slides.")
                 else:
                     st.error("Download finished but file not found on server.")
             except Exception as e:
