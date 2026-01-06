@@ -96,35 +96,50 @@ class MyLogger:
 # --- HELPERS: METADATA & PDF ---
 def get_video_info(youtube_url, cookies_file=None, proxy=None):
     logger = MyLogger()
-    # Basic options to just fetch metadata
-    ydl_opts = {
-        'quiet': True, 
-        'no_warnings': True, 
-        'logger': logger, 
-        'nocheckcertificate': True,
-        # Default to generic extraction first
-    }
     
-    if cookies_file: 
-        ydl_opts['cookiefile'] = cookies_file
-        # If we have cookies, try to be more robust
-        ydl_opts['extractor_args'] = {'youtube': {'player_client': ['android', 'web']}}
-
-    if proxy: 
-        ydl_opts['proxy'] = proxy
+    # Define fallback strategies for Metadata Fetching
+    strategies = [
+        # Strategy 1: iOS (Often most robust on servers)
+        {'extractor_args': {'youtube': {'player_client': ['ios']}}},
+        # Strategy 2: Android
+        {'extractor_args': {'youtube': {'player_client': ['android']}}},
+        # Strategy 3: Web (Standard)
+        {'extractor_args': {'youtube': {'player_client': ['web']}}},
+        # Strategy 4: TV (Very permissive, good fallback)
+        {'extractor_args': {'youtube': {'player_client': ['tv']}}},
+        # Strategy 5: Default (Let yt-dlp decide)
+        {}
+    ]
     
-    # Retry mechanism for metadata
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            return ydl.extract_info(youtube_url, download=False), None
-    except Exception as e:
-        # Fallback: Try forcing iOS if default failed
+    last_error = None
+    
+    for i, strat in enumerate(strategies):
+        ydl_opts = {
+            'quiet': True, 
+            'no_warnings': True, 
+            'logger': logger, 
+            'nocheckcertificate': True,
+        }
+        
+        # Apply strategy args
+        if 'extractor_args' in strat:
+            ydl_opts['extractor_args'] = strat['extractor_args']
+            
+        if cookies_file: 
+            ydl_opts['cookiefile'] = cookies_file
+        if proxy: 
+            ydl_opts['proxy'] = proxy
+            
         try:
-            ydl_opts['extractor_args'] = {'youtube': {'player_client': ['ios']}}
+            # st.toast(f"Trying Metadata Strategy {i+1}...") # Optional: Debug feedback
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 return ydl.extract_info(youtube_url, download=False), None
-        except Exception as e2:
-            return None, f"{str(e)}\nFallback error: {str(e2)}\n\nLogs:\n" + "\n".join(logger.logs)
+        except Exception as e:
+            last_error = e
+            continue # Try next strategy
+
+    # If all fail
+    return None, f"All strategies failed. Last error: {str(last_error)}\n\nLogs:\n" + "\n".join(logger.logs)
 
 def create_pdf(image_buffers):
     if not image_buffers: return None
@@ -222,16 +237,21 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
         format_str = quality_options[selected_q_label]
         
         # DEFINE STRATEGIES to ensure download succeeds
+        # We cycle through these until one works
         strategies = [
-            # 1. Preferred: User selection, default clients
-            {'format': format_str, 'args': {}},
-            # 2. Fallback: 'Best' generic, Force iOS (Robust on servers)
+            # 1. Preferred: User selection, iOS client (Robust)
+            {'format': format_str, 'args': {'youtube': {'player_client': ['ios']}}},
+            # 2. Preferred: User selection, Android client
+            {'format': format_str, 'args': {'youtube': {'player_client': ['android']}}},
+            # 3. Fallback: 'Best', iOS
             {'format': 'best', 'args': {'youtube': {'player_client': ['ios']}}},
-            # 3. Fallback: 'Best' generic, Force Android
+            # 4. Fallback: 'Best', Android
             {'format': 'best', 'args': {'youtube': {'player_client': ['android']}}},
-            # 4. Fallback: 'Best', Force Web (Standard)
+            # 5. Fallback: 'Best', TV (Very robust but might be lower quality UI)
+            {'format': 'best', 'args': {'youtube': {'player_client': ['tv']}}},
+            # 6. Fallback: 'Best', Web
             {'format': 'best', 'args': {'youtube': {'player_client': ['web']}}},
-             # 5. Last Resort: 'Worst' (Just get the file)
+             # 7. Last Resort: 'Worst' (Just get the file)
             {'format': 'worst', 'args': {}}
         ]
 
@@ -242,7 +262,7 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
             with st.spinner("Downloading video segment (attempting multiple strategies)..."):
                 for i, strategy in enumerate(strategies):
                     try:
-                        status_text.text(f"Attempt {i+1}/{len(strategies)}: {strategy.get('format')}...")
+                        status_text.text(f"Attempt {i+1}/{len(strategies)}: {strategy.get('format')} using {list(strategy['args'].get('youtube',{}).values())[0] if 'youtube' in strategy['args'] else 'default'}...")
                         
                         ydl_opts = {
                             'format': strategy['format'],
