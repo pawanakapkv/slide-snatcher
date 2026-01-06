@@ -97,16 +97,20 @@ class MyLogger:
 # --- HELPERS: METADATA & PDF ---
 def get_video_info(youtube_url, cookies_file=None, proxy=None):
     logger = MyLogger()
-    # Reverted to simple options as requested
+    # Updated: Prioritize iOS client which is more stable on servers
     ydl_opts = {
         'quiet': True, 
         'no_warnings': True, 
         'logger': logger, 
-        'nocheckcertificate': True
+        'nocheckcertificate': True,
+        'extractor_args': {'youtube': {'player_client': ['ios', 'web']}}
     }
     
     if cookies_file: 
         ydl_opts['cookiefile'] = cookies_file
+        # Android is good if cookies are present
+        ydl_opts['extractor_args'] = {'youtube': {'player_client': ['android', 'ios', 'web']}}
+
     if proxy: 
         ydl_opts['proxy'] = proxy
     
@@ -221,26 +225,29 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                 'no_warnings': True,
                 'download_ranges': lambda _, __: [{'start_time': start_val, 'end_time': end_val}],
                 'force_keyframes_at_cuts': True,
-                # Preserved this logic as it was in the original snippet provided
-                'extractor_args': {'youtube': {'player_client': ['ios', 'android', 'web']}},
+                # Set extractor args to be robust
+                'extractor_args': {'youtube': {'player_client': ['ios', 'web']}},
             }
             
+            if cookies_path:
+                ydl_opts['extractor_args'] = {'youtube': {'player_client': ['android', 'ios', 'web']}}
+
             try:
-                # 1. DOWNLOAD
+                # 1. DOWNLOAD (Retry Logic)
                 with st.spinner("Downloading video segment to server..."):
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        ydl.download([url])
+                    try:
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                            ydl.download([url])
+                    except Exception as e:
+                        status_text.warning("Specific quality failed. Retrying with 'Best Available' format...")
+                        # Fallback to simple format and ios client
+                        ydl_opts['format'] = 'best'
+                        ydl_opts['extractor_args'] = {'youtube': {'player_client': ['ios', 'web']}}
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                            ydl.download([url])
                 
                 # Check file
                 files = os.listdir(tmp_dir)
-                if not files:
-                    # Retry with simple format if failed
-                    status_text.warning("High quality format failed. Retrying with standard format...")
-                    ydl_opts['format'] = 'best'
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        ydl.download([url])
-                    files = os.listdir(tmp_dir)
-
                 if files:
                     file_name = files[0]
                     file_path = os.path.join(tmp_dir, file_name)
@@ -322,7 +329,7 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                             status_text.success(f"✅ Scanning Complete! Found {len(st.session_state['captured_images'])} slides.")
 
                 else:
-                    st.error("Download finished but file not found on server.")
+                    st.error("Download failed. No file created.")
             except Exception as e:
                 st.error(f"Process failed: {e}")
 
