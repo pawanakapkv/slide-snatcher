@@ -192,7 +192,7 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
     st.divider()
     col_a, col_b = st.columns([1, 3])
     with col_a:
-        if info.get('thumbnail'): st.image(info['thumbnail'], width=None) # Default width
+        if info.get('thumbnail'): st.image(info['thumbnail'], use_container_width=True) # Fixed width error
     with col_b:
         st.subheader(info.get('title', 'Unknown'))
         duration = info.get('duration', 0)
