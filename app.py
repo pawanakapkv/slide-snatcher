@@ -211,7 +211,7 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
             cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
             
             if not cap.isOpened():
-                st.error("Error connecting to video stream. Try a different quality or check if ffmpeg is in packages.txt.")
+                st.error("Error connecting to video stream. Ensure 'ffmpeg' AND 'nodejs' are in packages.txt (on Streamlit Cloud). Try a different quality.")
             else:
                 fps = cap.get(cv2.CAP_PROP_FPS)
                 if fps <= 0 or fps > 120: fps = meta_fps if meta_fps else 30
