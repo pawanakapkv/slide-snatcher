@@ -157,7 +157,8 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
     st.divider()
     col_a, col_b = st.columns([1, 3])
     with col_a:
-        if info.get('thumbnail'): st.image(info['thumbnail'], width=None) # Default width
+        # UPDATED: width="stretch" fixes StreamlitInvalidWidthError
+        if info.get('thumbnail'): st.image(info['thumbnail'], width="stretch")
     with col_b:
         st.subheader(info.get('title', 'Unknown'))
         duration = info.get('duration', 0)
