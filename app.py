@@ -41,7 +41,8 @@ else:
 @st.cache_resource
 def setup_cookies_file():
     if "cookies" not in st.secrets:
-        st.warning("⚠️ No 'cookies' found in secrets! YouTube will treat this as a bot.")
+        # Warning kept, but Android client often works without cookies too
+        st.warning("⚠️ No 'cookies' found in secrets!")
         return None
     try:
         cookies_content = st.secrets["cookies"]
@@ -77,13 +78,13 @@ class MyLogger:
 # --- HELPERS: METADATA ---
 def get_video_info(youtube_url, cookies_file=None, proxy=None):
     logger = MyLogger()
-    # ADDED USER AGENT TO BYPASS BOT CHECK
+    # MODIFIED: Use Android client to bypass JS/Bot checks on server
     ydl_opts = {
         'quiet': True, 
         'no_warnings': True, 
         'logger': logger, 
         'nocheckcertificate': True,
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'extractor_args': {'youtube': {'player_client': ['android']}},
     }
     if cookies_file: ydl_opts['cookiefile'] = cookies_file
     if proxy: ydl_opts['proxy'] = proxy
@@ -226,8 +227,8 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                 'quiet': True,
                 'no_warnings': True,
                 'download_ranges': download_range_func,
-                # ADDED USER AGENT HERE TOO
-                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                # MODIFIED: Use Android client
+                'extractor_args': {'youtube': {'player_client': ['android']}},
             }
             try:
                 with st.spinner("Downloading video segment..."):
@@ -280,8 +281,8 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                 'quiet': True,
                 'no_warnings': True,
                 'download_ranges': download_range_func,
-                # ADDED USER AGENT HERE TOO
-                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                # MODIFIED: Use Android client
+                'extractor_args': {'youtube': {'player_client': ['android']}},
             }
 
             try:
