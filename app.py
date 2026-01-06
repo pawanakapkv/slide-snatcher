@@ -3,6 +3,7 @@ import os
 import sys
 import shutil
 import tempfile
+from datetime import datetime
 
 # Try to import yt_dlp
 try:
@@ -23,34 +24,45 @@ if not shutil.which('ffmpeg'):
     st.info("Without FFmpeg, downloads may be limited to 720p, and Audio conversion to MP3 will not work.")
 
 # --------------------------------------------------------------------------
-# PROXY SETUP
+# PROXY & AUTHENTICATION SETUP (FROM SECRETS)
 # --------------------------------------------------------------------------
 # Retrieve proxy from Streamlit secrets
 proxy_url = None
 if "proxy_url" in st.secrets:
     proxy_url = st.secrets["proxy_url"]
 else:
-    st.warning("⚠️ No proxy found in secrets! If running in cloud/production, downloads will likely fail due to IP blocking.")
+    st.warning("⚠️ No 'proxy_url' found in secrets! Downloads will likely fail in production.")
+
+# Setup Cookies from Secrets
+@st.cache_resource
+def setup_cookies_file():
+    """Reads cookies from st.secrets and writes them to a temp file."""
+    if "cookies" not in st.secrets:
+        st.warning("⚠️ No 'cookies' found in secrets! You may encounter 'Sign in' errors.")
+        return None
+        
+    try:
+        # Get cookies string from secrets
+        cookies_content = st.secrets["cookies"]
+        
+        # Create a temp file that persists for the session
+        # yt-dlp needs a file path, it cannot take a raw string
+        fp = tempfile.NamedTemporaryFile(delete=False, suffix='.txt', mode='w', encoding='utf-8')
+        fp.write(cookies_content)
+        fp.close()
+        return fp.name
+    except Exception as e:
+        st.error(f"Error setting up cookies: {e}")
+        return None
+
+# Get the path to the auto-generated cookies file
+cookie_path = setup_cookies_file()
 
 # --------------------------------------------------------------------------
 # APP LOGIC
 # --------------------------------------------------------------------------
 
 st.markdown("Enter a YouTube URL below to download video or audio.")
-
-# --- ADDED: Cookie Uploader for Authentication ---
-with st.expander("🔓 Authentication (Cookies) - Required for 'Sign in' errors"):
-    st.info("If you get a 'Sign in to confirm you’re not a bot' error, upload your `cookies.txt` file here.")
-    st.markdown("[How to get cookies.txt?](https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp)")
-    cookies_file = st.file_uploader("Upload cookies.txt", type=["txt", "text"])
-
-# Handle Cookie File
-cookie_path = None
-if cookies_file:
-    # Save uploaded file to a temporary file so yt-dlp can read it
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.txt', mode='wb') as fp:
-        fp.write(cookies_file.getvalue())
-        cookie_path = fp.name
 
 # Initialize session state to store video info between re-runs
 if 'video_info' not in st.session_state:
@@ -79,7 +91,7 @@ if st.button("Fetch Info"):
                     'no_warnings': True,
                     # Apply Proxy if available
                     'proxy': proxy_url,
-                    # Apply Cookies if available
+                    # Apply Cookies automatically
                     'cookiefile': cookie_path,
                 }
                 
@@ -194,17 +206,15 @@ if st.session_state.video_info:
                 'progress_hooks': [progress_hook],
                 'postprocessors': postprocessors,
                 'proxy': proxy_url, 
-                'cookiefile': cookie_path, # Passed the cookie path here
+                'cookiefile': cookie_path, # Passed the hardcoded cookie path
             }
             
             # Start Download
             try:
-                # Debug message (optional, remove in final production)
+                # Debug message (optional)
                 if proxy_url:
-                    st.info(f"Connecting via Proxy: {proxy_url.split('@')[1]}")
-                if cookie_path:
-                    st.info("Using uploaded cookies.txt for authentication")
-
+                    st.info(f"Connecting via Proxy...")
+                
                 with st.spinner("Starting download..."):
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         ydl.download([url])
