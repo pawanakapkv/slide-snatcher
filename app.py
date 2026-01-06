@@ -118,6 +118,11 @@ def get_stream_url(youtube_url, format_str, cookies_file=None, proxy=None):
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(youtube_url, download=False)
+            
+            # --- FIX: Check if info is None before accessing attributes ---
+            if info is None:
+                return None, None, "Failed to extract video info (None returned). This often happens due to geo-restrictions or age-gating. Check if cookies are valid."
+
             # Return URL, FPS, and None for error
             return info.get('url', None), info.get('fps', 30), None
     except Exception as e:
