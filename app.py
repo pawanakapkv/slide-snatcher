@@ -1,19 +1,16 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import cv2
 import yt_dlp
 import numpy as np
 import os
 import tempfile
-import sys
 import shutil
-import logging
 from PIL import Image
 
 # 1. PAGE CONFIGURATION
 st.set_page_config(page_title="Slide Snatcher", layout="wide")
-st.title("📸 YouTube Slide Snatcher (Download & Scan Mode)")
-st.markdown("Step 1: Download video segment to server. Step 2: Auto-scan for slides.")
+st.title("📸 YouTube Slide Snatcher")
+st.markdown("Step 1: Download video segment. Step 2: Auto-scan for slides.")
 
 # Check for FFmpeg
 if not shutil.which('ffmpeg'):
@@ -28,41 +25,57 @@ if 'captured_images' not in st.session_state:
     st.session_state['captured_images'] = []
 
 # --------------------------------------------------------------------------
-# PROXY & AUTHENTICATION SETUP (FROM SECRETS)
+# SETTINGS (SIDEBAR)
 # --------------------------------------------------------------------------
-proxy_url = None
-if "proxy_url" in st.secrets:
-    proxy_url = st.secrets["proxy_url"]
-else:
-    st.warning("⚠️ No 'proxy_url' found in secrets! Downloads might fail.")
-
-@st.cache_resource
-def setup_cookies_file():
-    if "cookies" not in st.secrets:
-        st.warning("⚠️ No 'cookies' found in secrets!")
-        return None
-    try:
-        cookies_content = st.secrets["cookies"]
-        fp = tempfile.NamedTemporaryFile(delete=False, suffix='.txt', mode='w', encoding='utf-8')
-        fp.write(cookies_content)
-        fp.close()
-        return fp.name
-    except Exception as e:
-        st.error(f"Error setting up cookies: {e}")
-        return None
-
-cookies_path = setup_cookies_file()
-
-# 2. SIDEBAR SETTINGS
 with st.sidebar:
     st.header("⚙️ Settings")
+    
     st.subheader("🔍 Detection Settings")
     sensitivity = st.slider("Color Sensitivity", min_value=10, max_value=100, value=35, help="Higher = less sensitive to small color changes")
-    strictness = st.slider("Strictness (%)", min_value=0.1, max_value=100.0, value=1.0, step=0.1, help="Percentage of screen that must change to trigger a capture")
+    strictness = st.slider("Strictness (%)", min_value=0.1, max_value=100.0, value=1.0, step=0.1, help="Percentage of screen that must change to trigger capture")
+    
     st.divider()
-    st.info("💡 **Speed Tip:** Adjust jump intervals")
+    st.subheader("⏩ Speed")
     min_skip = st.slider("Min Jump (Seconds)", 1, 5, 2)
     max_skip = st.slider("Max Jump (Seconds)", 5, 30, 10)
+
+# --------------------------------------------------------------------------
+# PROXY & AUTH LOGIC
+# --------------------------------------------------------------------------
+proxy_url = st.secrets.get("proxy_url", None)
+
+def get_cookies_path(text_input, uploaded_file):
+    """
+    Returns path to a temp cookie file. 
+    Priority: 1. Paste Text, 2. Uploaded File, 3. st.secrets, 4. None
+    """
+    try:
+        content = None
+        
+        # PRIORITY 1: Pasted Text
+        if text_input and len(text_input.strip()) > 0:
+            content = text_input
+            
+        # PRIORITY 2: Manual Upload
+        elif uploaded_file is not None:
+            content = uploaded_file.getvalue().decode("utf-8")
+
+        # PRIORITY 3: Secrets
+        elif "cookies" in st.secrets:
+            content = st.secrets["cookies"]
+
+        # Write to temp file if we found content
+        if content:
+            fp = tempfile.NamedTemporaryFile(delete=False, suffix='.txt', mode='w', encoding='utf-8')
+            fp.write(content)
+            fp.close()
+            return fp.name
+            
+    except Exception as e:
+        st.error(f"Error processing cookies: {e}")
+        return None
+    
+    return None
 
 # --- LOGGING ---
 class MyLogger:
@@ -75,9 +88,17 @@ class MyLogger:
 # --- HELPERS: METADATA & PDF ---
 def get_video_info(youtube_url, cookies_file=None, proxy=None):
     logger = MyLogger()
-    ydl_opts = {'quiet': True, 'no_warnings': True, 'logger': logger, 'nocheckcertificate': True}
+    # Robust options for fetching metadata
+    ydl_opts = {
+        'quiet': True, 
+        'no_warnings': True, 
+        'logger': logger, 
+        'nocheckcertificate': True,
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    }
     if cookies_file: ydl_opts['cookiefile'] = cookies_file
     if proxy: ydl_opts['proxy'] = proxy
+    
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             return ydl.extract_info(youtube_url, download=False), None
@@ -106,6 +127,18 @@ def fmt_time(seconds):
 
 # 4. MAIN APP INTERFACE
 url = st.text_input("1. Enter YouTube URL:", value=st.session_state['url_input'], placeholder="https://www.youtube.com/watch?v=...")
+
+# --- COOKIE SECTION (Moved to Main Area) ---
+with st.expander("🍪 Authentication (Fix 'Sign in' errors)", expanded=False):
+    st.info("If you see a 'Sign in to confirm you're not a bot' error, paste your cookies below.")
+    col1, col2 = st.columns(2)
+    with col1:
+        cookie_text_input = st.text_area("Paste Cookies Text (Netscape Format)", height=150, help="Paste the content of your cookies.txt here.")
+    with col2:
+        uploaded_cookies = st.file_uploader("Or Upload cookies.txt", type=["txt"])
+
+# Resolve cookies path immediately
+cookies_path = get_cookies_path(cookie_text_input, uploaded_cookies)
 
 if st.button("Fetch Info 🔎"):
     if not url:
@@ -174,7 +207,6 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
         # Setup Options
         format_str = quality_options[selected_q_label]
         
-        # --- DOWNLOAD RANGES CALLBACK ---
         def download_range_func(info_dict, ydl):
             return [{'start_time': start_val, 'end_time': end_val}]
 
@@ -185,19 +217,31 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                 'outtmpl': os.path.join(tmp_dir, '%(title)s.%(ext)s'),
                 'progress_hooks': [progress_hook],
                 'proxy': proxy_url,
-                'cookiefile': cookies_path,
+                'cookiefile': cookies_path, # Uses uploaded file or secret
                 'quiet': True,
                 'no_warnings': True,
-                # Add download ranges to download only the specific segment
                 'download_ranges': download_range_func,
-                'force_keyframes_at_cuts': True, 
+                'force_keyframes_at_cuts': True,
+                # FIXED: Options to avoid blocking
+                'nocheckcertificate': True,
+                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             }
 
             try:
                 # 1. DOWNLOAD
                 with st.spinner("Downloading video segment to server..."):
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        ydl.download([url])
+                    try:
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                            ydl.download([url])
+                    except Exception as e:
+                        # FALLBACK: If cookies failed, try without them
+                        if "cookie" in str(e).lower() or "Sign in" in str(e):
+                            st.warning("⚠️ Cookie auth failed. Retrying without cookies...")
+                            if 'cookiefile' in ydl_opts: del ydl_opts['cookiefile']
+                            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                                ydl.download([url])
+                        else:
+                            raise e
                 
                 # Check file
                 files = os.listdir(tmp_dir)
@@ -216,19 +260,12 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                         if fps <= 0: fps = 30
                         
                         last_frame_data = None
-                        
-                        # Since we downloaded ONLY the segment, the file starts at 0:00
-                        # which corresponds to 'start_val' in the original video.
                         current_frame_pos = 0 
-                        
-                        # We scan the entire downloaded clip
                         total_frames_in_file = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
                         end_frame_pos = total_frames_in_file
                         
-                        # Set initial position (start of the file)
                         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                         
-                        # Image processing vars
                         orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                         orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                         process_w = 640
