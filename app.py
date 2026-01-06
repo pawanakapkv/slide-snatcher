@@ -13,7 +13,7 @@ from PIL import Image
 # 1. PAGE CONFIGURATION
 st.set_page_config(page_title="Slide Snatcher", layout="wide")
 st.title("📸 YouTube Slide Snatcher (Download & Scan Mode)")
-st.markdown("Step 1: Download video segment to server. Step 2: Auto-scan for slides.")
+st.markdown("Step 1: Download video to server. Step 2: Auto-scan for slides.")
 
 # Check for FFmpeg
 if not shutil.which('ffmpeg'):
@@ -152,7 +152,7 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
     # --- TIME RANGE SELECTION ---
     st.subheader("3. Select Time Range to Scan")
     start_val, end_val = st.slider("Drag sliders to select scan range:", min_value=0, max_value=duration, value=(0, duration), format="mm:ss")
-    st.info(f"⏱️ Will download and scan only from **{fmt_time(start_val)}** to **{fmt_time(end_val)}**")
+    st.info(f"⏱️ Will scan from **{fmt_time(start_val)}** to **{fmt_time(end_val)}**")
     
     if st.button("Download & Scan 🚀", type="primary"):
         st.session_state['captured_images'] = []
@@ -174,10 +174,6 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
         # Setup Options
         format_str = quality_options[selected_q_label]
         
-        # --- DOWNLOAD RANGES CALLBACK ---
-        def download_range_func(info_dict, ydl):
-            return [{'start_time': start_val, 'end_time': end_val}]
-
         # Temporary Directory for Download & Scan
         with tempfile.TemporaryDirectory() as tmp_dir:
             ydl_opts = {
@@ -188,14 +184,11 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                 'cookiefile': cookies_path,
                 'quiet': True,
                 'no_warnings': True,
-                # Add download ranges to download only the specific segment
-                'download_ranges': download_range_func,
-                'force_keyframes_at_cuts': True, 
             }
 
             try:
                 # 1. DOWNLOAD
-                with st.spinner("Downloading video segment to server..."):
+                with st.spinner("Downloading video to server..."):
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         ydl.download([url])
                 
@@ -216,17 +209,12 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                         if fps <= 0: fps = 30
                         
                         last_frame_data = None
+                        current_frame_pos = int(start_val * fps)
+                        end_frame_pos = int(end_val * fps)
+                        total_scan_frames = end_frame_pos - current_frame_pos
                         
-                        # Since we downloaded ONLY the segment, the file starts at 0:00
-                        # which corresponds to 'start_val' in the original video.
-                        current_frame_pos = 0 
-                        
-                        # We scan the entire downloaded clip
-                        total_frames_in_file = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                        end_frame_pos = total_frames_in_file
-                        
-                        # Set initial position (start of the file)
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        # Set initial position
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_pos)
                         
                         # Image processing vars
                         orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -246,8 +234,9 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                             ret, frame = cap.read()
                             if not ret: break
                             
-                            if total_frames_in_file > 0:
-                                progress_bar.progress(min(current_frame_pos / total_frames_in_file, 1.0))
+                            if total_scan_frames > 0:
+                                relative_pos = current_frame_pos - int(start_val * fps)
+                                progress_bar.progress(min(max(relative_pos / total_scan_frames, 0.0), 1.0))
                                 
                             small_frame = cv2.resize(frame, (process_w, process_h))
                             gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
@@ -269,11 +258,7 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                                 if retval:
                                     st.session_state['captured_images'].append(buffer)
                                 
-                                # Correct timestamp: File Time + Original Start Time
-                                current_file_time = current_frame_pos / fps
-                                actual_video_time = current_file_time + start_val
-                                time_str = fmt_time(actual_video_time)
-                                
+                                time_str = fmt_time(current_frame_pos / fps)
                                 img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                                 st.image(img_rgb, caption=f"Slide #{len(st.session_state['captured_images'])} at {time_str}", channels="RGB")
                                 current_frame_pos += jump_large 
