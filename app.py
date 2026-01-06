@@ -96,9 +96,11 @@ def get_video_info(youtube_url, cookies_file=None, proxy=None):
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            return ydl.extract_info(youtube_url, download=False)
+            # Return info AND None for error
+            return ydl.extract_info(youtube_url, download=False), None
     except Exception as e:
-        print(f"Metadata Error: {e}"); return None
+        # Return None for info AND the error string
+        return None, str(e)
 
 # --- HELPER 2: GET STREAM URL (NO DOWNLOAD) ---
 def get_stream_url(youtube_url, format_str, cookies_file=None, proxy=None):
@@ -116,9 +118,11 @@ def get_stream_url(youtube_url, format_str, cookies_file=None, proxy=None):
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(youtube_url, download=False)
-            return info.get('url', None), info.get('fps', 30)
+            # Return URL, FPS, and None for error
+            return info.get('url', None), info.get('fps', 30), None
     except Exception as e:
-        print(f"Stream URL Exception: {e}"); return None, None
+        # Return None, None, and the error string
+        return None, None, str(e)
 
 # --- HELPER 3: CREATE SLIDESHOW VIDEO ---
 def create_summary_video(image_buffers):
@@ -178,13 +182,14 @@ if st.button("Check Video 🔎"):
     else:
         with st.spinner("Fetching video formats..."):
             # Pass proxy and cookies here
-            info = get_video_info(url, cookies_file=cookies_path, proxy=proxy_url)
+            info, error_msg = get_video_info(url, cookies_file=cookies_path, proxy=proxy_url)
+            
             if info:
                 st.session_state['video_info'] = info
                 st.session_state['url_input'] = url 
                 st.rerun() 
             else:
-                st.error("Could not find video. Check proxy/cookies settings.")
+                st.error(f"❌ Could not find video. Error details:\n\n{error_msg}")
 
 if st.session_state['video_info'] and url == st.session_state['url_input']:
     info = st.session_state['video_info']
@@ -231,108 +236,113 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
 
     # LOGIC: Start Scan
     if start_btn:
-        st.session_state['captured_images'] = []
-        
-        js = f"window.open('{ADSTERRA_DIRECT_LINK}', '_blank');"
-        components.html(f"<script>{js}</script>", height=0, width=0)
-        
-        status_text = st.empty()
-        progress_bar = st.progress(0)
-        
-        status_text.info(f"🌐 Fetching stream URL via Proxy...")
-        # Pass proxy and cookies here
-        stream_url, meta_fps = get_stream_url(url, selected_format_str, cookies_path, proxy_url)
-        
-        if not stream_url:
-            st.error("Could not retrieve stream URL. YouTube might have blocked the IP or proxy.")
-        else:
-            status_text.info(f"🎥 Connecting to stream...")
+        # Wrap everything in a try-except to catch generic crashes (OpenCV errors, etc)
+        try:
+            st.session_state['captured_images'] = []
             
-            # --- CRITICAL FIX: FORCE OPENCV TO USE PROXY ---
-            if proxy_url:
-                os.environ['http_proxy'] = proxy_url
-                os.environ['https_proxy'] = proxy_url
-                os.environ['HTTP_PROXY'] = proxy_url
-                os.environ['HTTPS_PROXY'] = proxy_url
+            js = f"window.open('{ADSTERRA_DIRECT_LINK}', '_blank');"
+            components.html(f"<script>{js}</script>", height=0, width=0)
             
-            # Explicitly use FFmpeg backend for Streamlit Cloud/Linux environments
-            cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
+            status_text = st.empty()
+            progress_bar = st.progress(0)
             
-            if not cap.isOpened():
-                st.error("Error connecting to video stream. Ensure FFmpeg is installed.")
+            status_text.info(f"🌐 Fetching stream URL via Proxy...")
+            # Pass proxy and cookies here
+            stream_url, meta_fps, stream_error = get_stream_url(url, selected_format_str, cookies_path, proxy_url)
+            
+            if not stream_url:
+                st.error(f"❌ Could not retrieve stream URL.\n\nError details: {stream_error}")
             else:
-                fps = cap.get(cv2.CAP_PROP_FPS)
-                if fps <= 0 or fps > 120: fps = meta_fps if meta_fps else 30
+                status_text.info(f"🎥 Connecting to stream...")
                 
-                last_frame_data = None
-                current_frame_pos = int(start_val * fps)
-                end_frame_pos = int(end_val * fps)
-                total_scan_frames = end_frame_pos - current_frame_pos
+                # --- CRITICAL FIX: FORCE OPENCV TO USE PROXY ---
+                if proxy_url:
+                    os.environ['http_proxy'] = proxy_url
+                    os.environ['https_proxy'] = proxy_url
+                    os.environ['HTTP_PROXY'] = proxy_url
+                    os.environ['HTTPS_PROXY'] = proxy_url
                 
-                # Seek to start
-                cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_pos)
-                ret, frame = cap.read()
+                # Explicitly use FFmpeg backend for Streamlit Cloud/Linux environments
+                cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
                 
-                if not ret:
-                    st.error("Stream ended unexpectedly or seek failed.")
+                if not cap.isOpened():
+                    st.error("Error connecting to video stream. OpenCV could not open the URL. Ensure FFmpeg is installed and the proxy allows video streaming.")
                 else:
-                    orig_h, orig_w = frame.shape[:2]
-                    process_w = 640
-                    process_h = int(process_w * (orig_h / orig_w)) if orig_w > 0 else 360
-                    total_pixel_count = process_w * process_h
-                    motion_threshold_score = int(total_pixel_count * (strictness / 100) * 255)
-                    jump_small = int(fps * min_skip)
-                    jump_large = int(fps * max_skip)
+                    fps = cap.get(cv2.CAP_PROP_FPS)
+                    if fps <= 0 or fps > 120: fps = meta_fps if meta_fps else 30
                     
-                    st.divider()
-                    st.subheader("Results (Live Stream)")
+                    last_frame_data = None
+                    current_frame_pos = int(start_val * fps)
+                    end_frame_pos = int(end_val * fps)
+                    total_scan_frames = end_frame_pos - current_frame_pos
                     
-                    while current_frame_pos < end_frame_pos:
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_pos)
-                        ret, frame = cap.read()
-                        if not ret: break 
+                    # Seek to start
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_pos)
+                    ret, frame = cap.read()
+                    
+                    if not ret:
+                        st.error("Stream ended unexpectedly or seek failed immediately. The video format might not be supported by OpenCV/FFmpeg.")
+                    else:
+                        orig_h, orig_w = frame.shape[:2]
+                        process_w = 640
+                        process_h = int(process_w * (orig_h / orig_w)) if orig_w > 0 else 360
+                        total_pixel_count = process_w * process_h
+                        motion_threshold_score = int(total_pixel_count * (strictness / 100) * 255)
+                        jump_small = int(fps * min_skip)
+                        jump_large = int(fps * max_skip)
                         
-                        if total_scan_frames > 0:
-                            relative_pos = current_frame_pos - int(start_val * fps)
-                            progress_bar.progress(min(relative_pos / total_scan_frames, 1.0))
+                        st.divider()
+                        st.subheader("Results (Live Stream)")
+                        
+                        while current_frame_pos < end_frame_pos:
+                            cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_pos)
+                            ret, frame = cap.read()
+                            if not ret: break 
+                            
+                            if total_scan_frames > 0:
+                                relative_pos = current_frame_pos - int(start_val * fps)
+                                progress_bar.progress(min(relative_pos / total_scan_frames, 1.0))
 
-                        small_frame = cv2.resize(frame, (process_w, process_h))
-                        gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
-                        gray = cv2.GaussianBlur(gray, (21, 21), 0)
+                            small_frame = cv2.resize(frame, (process_w, process_h))
+                            gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
+                            gray = cv2.GaussianBlur(gray, (21, 21), 0)
 
-                        found_new_slide = False
-                        if last_frame_data is None:
-                            found_new_slide = True
-                            last_frame_data = gray
-                        else:
-                            diff = cv2.absdiff(last_frame_data, gray)
-                            _, thresh = cv2.threshold(diff, sensitivity, 255, cv2.THRESH_BINARY)
-                            if np.sum(thresh) > motion_threshold_score:
+                            found_new_slide = False
+                            if last_frame_data is None:
                                 found_new_slide = True
                                 last_frame_data = gray
-                        
-                        if found_new_slide:
-                            retval, buffer = cv2.imencode('.jpg', frame)
-                            if retval:
-                                st.session_state['captured_images'].append(buffer)
+                            else:
+                                diff = cv2.absdiff(last_frame_data, gray)
+                                _, thresh = cv2.threshold(diff, sensitivity, 255, cv2.THRESH_BINARY)
+                                if np.sum(thresh) > motion_threshold_score:
+                                    found_new_slide = True
+                                    last_frame_data = gray
                             
-                            time_str = fmt_time(current_frame_pos / fps)
-                            img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                            st.image(img_rgb, caption=f"Slide #{len(st.session_state['captured_images'])} at {time_str}", channels="RGB")
-                            current_frame_pos += jump_large 
-                        else:
-                            current_frame_pos += jump_small
+                            if found_new_slide:
+                                retval, buffer = cv2.imencode('.jpg', frame)
+                                if retval:
+                                    st.session_state['captured_images'].append(buffer)
+                                
+                                time_str = fmt_time(current_frame_pos / fps)
+                                img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                                st.image(img_rgb, caption=f"Slide #{len(st.session_state['captured_images'])} at {time_str}", channels="RGB")
+                                current_frame_pos += jump_large 
+                            else:
+                                current_frame_pos += jump_small
 
-                    cap.release()
-                    progress_bar.empty()
-                    status_text.success(f"✅ Scanning Complete! Found {len(st.session_state['captured_images'])} slides.")
+                        cap.release()
+                        progress_bar.empty()
+                        status_text.success(f"✅ Scanning Complete! Found {len(st.session_state['captured_images'])} slides.")
+                        
+                # --- CLEANUP PROXY ENV VARS (Optional but good practice) ---
+                if proxy_url:
+                    os.environ.pop('http_proxy', None)
+                    os.environ.pop('https_proxy', None)
+                    os.environ.pop('HTTP_PROXY', None)
+                    os.environ.pop('HTTPS_PROXY', None)
                     
-            # --- CLEANUP PROXY ENV VARS (Optional but good practice) ---
-            if proxy_url:
-                os.environ.pop('http_proxy', None)
-                os.environ.pop('https_proxy', None)
-                os.environ.pop('HTTP_PROXY', None)
-                os.environ.pop('HTTPS_PROXY', None)
+        except Exception as e:
+            st.error(f"❌ An unexpected error occurred:\n\n{e}")
 
     # --- RESULT DISPLAY ---
     if len(st.session_state.get('captured_images', [])) > 0:
