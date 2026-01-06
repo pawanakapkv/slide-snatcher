@@ -39,7 +39,6 @@ if "proxy_url" in st.secrets:
 elif "PROXY_URL" in st.secrets:
     proxy_url = st.secrets["PROXY_URL"]
 else:
-    # Optional warning, or just silent
     pass
 
 # Load Cookies from Secrets (Default)
@@ -97,28 +96,35 @@ class MyLogger:
 # --- HELPERS: METADATA & PDF ---
 def get_video_info(youtube_url, cookies_file=None, proxy=None):
     logger = MyLogger()
-    # Updated: Prioritize iOS client which is more stable on servers
+    # Basic options to just fetch metadata
     ydl_opts = {
         'quiet': True, 
         'no_warnings': True, 
         'logger': logger, 
         'nocheckcertificate': True,
-        'extractor_args': {'youtube': {'player_client': ['ios', 'web']}}
+        # Default to generic extraction first
     }
     
     if cookies_file: 
         ydl_opts['cookiefile'] = cookies_file
-        # Android is good if cookies are present
-        ydl_opts['extractor_args'] = {'youtube': {'player_client': ['android', 'ios', 'web']}}
+        # If we have cookies, try to be more robust
+        ydl_opts['extractor_args'] = {'youtube': {'player_client': ['android', 'web']}}
 
     if proxy: 
         ydl_opts['proxy'] = proxy
     
+    # Retry mechanism for metadata
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             return ydl.extract_info(youtube_url, download=False), None
     except Exception as e:
-        return None, f"{str(e)}\n\nLogs:\n" + "\n".join(logger.logs)
+        # Fallback: Try forcing iOS if default failed
+        try:
+            ydl_opts['extractor_args'] = {'youtube': {'player_client': ['ios']}}
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                return ydl.extract_info(youtube_url, download=False), None
+        except Exception as e2:
+            return None, f"{str(e)}\nFallback error: {str(e2)}\n\nLogs:\n" + "\n".join(logger.logs)
 
 def create_pdf(image_buffers):
     if not image_buffers: return None
@@ -212,126 +218,141 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                 progress_bar.progress(1.0)
                 status_text.text("Download complete. Processing...")
 
+        # Base strategy options
         format_str = quality_options[selected_q_label]
         
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            ydl_opts = {
-                'format': format_str,
-                'outtmpl': os.path.join(tmp_dir, '%(title)s.%(ext)s'),
-                'progress_hooks': [progress_hook],
-                'proxy': proxy_url,
-                'cookiefile': cookies_path,
-                'quiet': True,
-                'no_warnings': True,
-                'download_ranges': lambda _, __: [{'start_time': start_val, 'end_time': end_val}],
-                'force_keyframes_at_cuts': True,
-                # Set extractor args to be robust
-                'extractor_args': {'youtube': {'player_client': ['ios', 'web']}},
-            }
-            
-            if cookies_path:
-                ydl_opts['extractor_args'] = {'youtube': {'player_client': ['android', 'ios', 'web']}}
+        # DEFINE STRATEGIES to ensure download succeeds
+        strategies = [
+            # 1. Preferred: User selection, default clients
+            {'format': format_str, 'args': {}},
+            # 2. Fallback: 'Best' generic, Force iOS (Robust on servers)
+            {'format': 'best', 'args': {'youtube': {'player_client': ['ios']}}},
+            # 3. Fallback: 'Best' generic, Force Android
+            {'format': 'best', 'args': {'youtube': {'player_client': ['android']}}},
+            # 4. Fallback: 'Best', Force Web (Standard)
+            {'format': 'best', 'args': {'youtube': {'player_client': ['web']}}},
+             # 5. Last Resort: 'Worst' (Just get the file)
+            {'format': 'worst', 'args': {}}
+        ]
 
-            try:
-                # 1. DOWNLOAD (Retry Logic)
-                with st.spinner("Downloading video segment to server..."):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            success = False
+            last_error = None
+            
+            with st.spinner("Downloading video segment (attempting multiple strategies)..."):
+                for i, strategy in enumerate(strategies):
                     try:
+                        status_text.text(f"Attempt {i+1}/{len(strategies)}: {strategy.get('format')}...")
+                        
+                        ydl_opts = {
+                            'format': strategy['format'],
+                            'outtmpl': os.path.join(tmp_dir, '%(title)s.%(ext)s'),
+                            'progress_hooks': [progress_hook],
+                            'cookiefile': cookies_path,
+                            'quiet': True,
+                            'no_warnings': True,
+                            'download_ranges': lambda _, __: [{'start_time': start_val, 'end_time': end_val}],
+                            'force_keyframes_at_cuts': True,
+                            'extractor_args': strategy['args']
+                        }
+                        
+                        if proxy_url: ydl_opts['proxy'] = proxy_url
+
                         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                             ydl.download([url])
+                        
+                        # Verify file exists
+                        if len(os.listdir(tmp_dir)) > 0:
+                            success = True
+                            break # Exit loop if successful
+                            
                     except Exception as e:
-                        status_text.warning("Specific quality failed. Retrying with 'Best Available' format...")
-                        # Fallback to simple format and ios client
-                        ydl_opts['format'] = 'best'
-                        ydl_opts['extractor_args'] = {'youtube': {'player_client': ['ios', 'web']}}
-                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                            ydl.download([url])
-                
-                # Check file
+                        last_error = e
+                        continue
+            
+            if success:
                 files = os.listdir(tmp_dir)
-                if files:
-                    file_name = files[0]
-                    file_path = os.path.join(tmp_dir, file_name)
-                    
-                    # Store video for download if requested
-                    if dl_video_only:
-                        with open(file_path, "rb") as f:
-                             st.session_state['ready_segment'] = {'name': file_name, 'data': f.read()}
-                        status_text.success("✅ Video segment ready below!")
-                    
-                    # 2. SCANNING LOGIC
-                    elif start_scan:
-                        status_text.info(f"📂 Scanning local file: {file_name}")
-                        cap = cv2.VideoCapture(file_path)
-                        if not cap.isOpened():
-                            st.error("Error opening downloaded video file.")
-                        else:
-                            fps = cap.get(cv2.CAP_PROP_FPS) or 30
-                            total_frames_in_file = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                file_name = files[0]
+                file_path = os.path.join(tmp_dir, file_name)
+                
+                # Store video for download if requested
+                if dl_video_only:
+                    with open(file_path, "rb") as f:
+                            st.session_state['ready_segment'] = {'name': file_name, 'data': f.read()}
+                    status_text.success("✅ Video segment ready below!")
+                
+                # 2. SCANNING LOGIC
+                elif start_scan:
+                    status_text.info(f"📂 Scanning local file: {file_name}")
+                    cap = cv2.VideoCapture(file_path)
+                    if not cap.isOpened():
+                        st.error("Error opening downloaded video file.")
+                    else:
+                        fps = cap.get(cv2.CAP_PROP_FPS) or 30
+                        total_frames_in_file = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                        
+                        # Scan loop
+                        current_frame_pos = 0
+                        end_frame_pos = total_frames_in_file
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        
+                        orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                        orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                        process_w = 640
+                        process_h = int(process_w * (orig_h / orig_w)) if orig_w > 0 else 360
+                        
+                        motion_threshold_score = int((process_w * process_h) * (strictness / 100) * 255)
+                        jump_small = int(fps * min_skip)
+                        jump_large = int(fps * max_skip)
+                        
+                        last_frame_data = None
+                        
+                        st.divider()
+                        st.subheader("Results")
+                        
+                        while current_frame_pos < end_frame_pos:
+                            cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_pos)
+                            ret, frame = cap.read()
+                            if not ret: break
                             
-                            # Scan loop
-                            current_frame_pos = 0
-                            end_frame_pos = total_frames_in_file
-                            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                            if total_frames_in_file > 0:
+                                progress_bar.progress(min(current_frame_pos / total_frames_in_file, 1.0))
                             
-                            orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                            orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                            process_w = 640
-                            process_h = int(process_w * (orig_h / orig_w)) if orig_w > 0 else 360
+                            small_frame = cv2.resize(frame, (process_w, process_h))
+                            gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
+                            gray = cv2.GaussianBlur(gray, (21, 21), 0)
                             
-                            motion_threshold_score = int((process_w * process_h) * (strictness / 100) * 255)
-                            jump_small = int(fps * min_skip)
-                            jump_large = int(fps * max_skip)
-                            
-                            last_frame_data = None
-                            
-                            st.divider()
-                            st.subheader("Results")
-                            
-                            while current_frame_pos < end_frame_pos:
-                                cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_pos)
-                                ret, frame = cap.read()
-                                if not ret: break
-                                
-                                if total_frames_in_file > 0:
-                                    progress_bar.progress(min(current_frame_pos / total_frames_in_file, 1.0))
-                                
-                                small_frame = cv2.resize(frame, (process_w, process_h))
-                                gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
-                                gray = cv2.GaussianBlur(gray, (21, 21), 0)
-                                
-                                found_new_slide = False
-                                if last_frame_data is None:
+                            found_new_slide = False
+                            if last_frame_data is None:
+                                found_new_slide = True
+                                last_frame_data = gray
+                            else:
+                                diff = cv2.absdiff(last_frame_data, gray)
+                                _, thresh = cv2.threshold(diff, sensitivity, 255, cv2.THRESH_BINARY)
+                                if np.sum(thresh) > motion_threshold_score:
                                     found_new_slide = True
                                     last_frame_data = gray
-                                else:
-                                    diff = cv2.absdiff(last_frame_data, gray)
-                                    _, thresh = cv2.threshold(diff, sensitivity, 255, cv2.THRESH_BINARY)
-                                    if np.sum(thresh) > motion_threshold_score:
-                                        found_new_slide = True
-                                        last_frame_data = gray
-                                
-                                if found_new_slide:
-                                    retval, buffer = cv2.imencode('.jpg', frame)
-                                    if retval:
-                                        st.session_state['captured_images'].append(buffer)
-                                        
-                                        current_file_time = current_frame_pos / fps
-                                        actual_video_time = current_file_time + start_val
-                                        
-                                        img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                                        st.image(img_rgb, caption=f"Slide #{len(st.session_state['captured_images'])} at {fmt_time(actual_video_time)}", channels="RGB")
-                                        current_frame_pos += jump_large 
-                                else:
-                                    current_frame_pos += jump_small
                             
-                            cap.release()
-                            progress_bar.empty()
-                            status_text.success(f"✅ Scanning Complete! Found {len(st.session_state['captured_images'])} slides.")
+                            if found_new_slide:
+                                retval, buffer = cv2.imencode('.jpg', frame)
+                                if retval:
+                                    st.session_state['captured_images'].append(buffer)
+                                    
+                                    current_file_time = current_frame_pos / fps
+                                    actual_video_time = current_file_time + start_val
+                                    
+                                    img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                                    st.image(img_rgb, caption=f"Slide #{len(st.session_state['captured_images'])} at {fmt_time(actual_video_time)}", channels="RGB")
+                                    current_frame_pos += jump_large 
+                            else:
+                                current_frame_pos += jump_small
+                        
+                        cap.release()
+                        progress_bar.empty()
+                        status_text.success(f"✅ Scanning Complete! Found {len(st.session_state['captured_images'])} slides.")
 
-                else:
-                    st.error("Download failed. No file created.")
-            except Exception as e:
-                st.error(f"Process failed: {e}")
+            else:
+                st.error(f"Download failed after all attempts. Last error: {last_error}")
 
     # --- RESULT DOWNLOADS ---
     if st.session_state.get('ready_segment'):
