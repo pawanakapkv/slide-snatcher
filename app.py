@@ -274,70 +274,91 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                 if not cap.isOpened():
                     st.error("Error connecting to video stream. OpenCV could not open the URL.")
                 else:
-                    fps = cap.get(cv2.CAP_PROP_FPS)
-                    if fps <= 0 or fps > 120: fps = meta_fps if meta_fps else 30
-                    
-                    last_frame_data = None
-                    current_frame_pos = int(start_val * fps)
-                    end_frame_pos = int(end_val * fps)
-                    total_scan_frames = end_frame_pos - current_frame_pos
-                    
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_pos)
-                    ret, frame = cap.read()
-                    
-                    if not ret:
-                        st.error("Stream ended unexpectedly or seek failed immediately.")
+                    # --- NEW ROBUSTNESS CHECK ---
+                    # 1. Test connection by reading 1 frame
+                    ret_check, _ = cap.read()
+                    if not ret_check:
+                         st.error("❌ Connection refused by YouTube (403 Forbidden). Even though we found the URL, YouTube rejected the video player request. Try selecting a lower quality (like 360p) or checking your Proxy/Cookies.")
+                         cap.release()
                     else:
-                        orig_h, orig_w = frame.shape[:2]
-                        process_w = 640
-                        process_h = int(process_w * (orig_h / orig_w)) if orig_w > 0 else 360
-                        total_pixel_count = process_w * process_h
-                        motion_threshold_score = int(total_pixel_count * (strictness / 100) * 255)
-                        jump_small = int(fps * min_skip)
-                        jump_large = int(fps * max_skip)
+                        # 2. Connection success! Now setup scanning
+                        fps = cap.get(cv2.CAP_PROP_FPS)
+                        if fps <= 0 or fps > 120: fps = meta_fps if meta_fps else 30
                         
-                        st.divider()
-                        st.subheader("Results (Live Stream)")
+                        last_frame_data = None
+                        current_frame_pos = int(start_val * fps)
+                        end_frame_pos = int(end_val * fps)
+                        total_scan_frames = end_frame_pos - current_frame_pos
                         
-                        while current_frame_pos < end_frame_pos:
-                            cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_pos)
+                        # 3. Try to seek to start position
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_pos)
+                        ret, frame = cap.read()
+                        
+                        # 4. Fallback if seek fails
+                        if not ret:
+                            st.warning(f"⚠️ Could not jump directly to {fmt_time(start_val)} (Stream doesn't support seeking). Starting scan from the beginning (0:00) instead.")
+                            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                            current_frame_pos = 0
+                            # Recalculate range
+                            total_scan_frames = end_frame_pos # Scan from 0 to end_val
                             ret, frame = cap.read()
-                            if not ret: break 
                             
-                            if total_scan_frames > 0:
-                                relative_pos = current_frame_pos - int(start_val * fps)
-                                progress_bar.progress(min(relative_pos / total_scan_frames, 1.0))
+                        if not ret:
+                            st.error("❌ Critical Error: Stream became unreadable after connection. We cannot proceed.")
+                        else:
+                            # 5. START MAIN LOOP
+                            orig_h, orig_w = frame.shape[:2]
+                            process_w = 640
+                            process_h = int(process_w * (orig_h / orig_w)) if orig_w > 0 else 360
+                            total_pixel_count = process_w * process_h
+                            motion_threshold_score = int(total_pixel_count * (strictness / 100) * 255)
+                            jump_small = int(fps * min_skip)
+                            jump_large = int(fps * max_skip)
+                            
+                            st.divider()
+                            st.subheader("Results (Live Stream)")
+                            
+                            while current_frame_pos < end_frame_pos:
+                                cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_pos)
+                                ret, frame = cap.read()
+                                if not ret: break 
+                                
+                                if total_scan_frames > 0:
+                                    relative_pos = current_frame_pos - (0 if current_frame_pos < int(start_val * fps) else int(start_val * fps))
+                                    # Safe progress calculation
+                                    prog = min(max(relative_pos / total_scan_frames, 0.0), 1.0)
+                                    progress_bar.progress(prog)
 
-                            small_frame = cv2.resize(frame, (process_w, process_h))
-                            gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
-                            gray = cv2.GaussianBlur(gray, (21, 21), 0)
+                                small_frame = cv2.resize(frame, (process_w, process_h))
+                                gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
+                                gray = cv2.GaussianBlur(gray, (21, 21), 0)
 
-                            found_new_slide = False
-                            if last_frame_data is None:
-                                found_new_slide = True
-                                last_frame_data = gray
-                            else:
-                                diff = cv2.absdiff(last_frame_data, gray)
-                                _, thresh = cv2.threshold(diff, sensitivity, 255, cv2.THRESH_BINARY)
-                                if np.sum(thresh) > motion_threshold_score:
+                                found_new_slide = False
+                                if last_frame_data is None:
                                     found_new_slide = True
                                     last_frame_data = gray
-                            
-                            if found_new_slide:
-                                retval, buffer = cv2.imencode('.jpg', frame)
-                                if retval:
-                                    st.session_state['captured_images'].append(buffer)
+                                else:
+                                    diff = cv2.absdiff(last_frame_data, gray)
+                                    _, thresh = cv2.threshold(diff, sensitivity, 255, cv2.THRESH_BINARY)
+                                    if np.sum(thresh) > motion_threshold_score:
+                                        found_new_slide = True
+                                        last_frame_data = gray
                                 
-                                time_str = fmt_time(current_frame_pos / fps)
-                                img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                                st.image(img_rgb, caption=f"Slide #{len(st.session_state['captured_images'])} at {time_str}", channels="RGB")
-                                current_frame_pos += jump_large 
-                            else:
-                                current_frame_pos += jump_small
+                                if found_new_slide:
+                                    retval, buffer = cv2.imencode('.jpg', frame)
+                                    if retval:
+                                        st.session_state['captured_images'].append(buffer)
+                                    
+                                    time_str = fmt_time(current_frame_pos / fps)
+                                    img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                                    st.image(img_rgb, caption=f"Slide #{len(st.session_state['captured_images'])} at {time_str}", channels="RGB")
+                                    current_frame_pos += jump_large 
+                                else:
+                                    current_frame_pos += jump_small
 
-                        cap.release()
-                        progress_bar.empty()
-                        status_text.success(f"✅ Scanning Complete! Found {len(st.session_state['captured_images'])} slides.")
+                            cap.release()
+                            progress_bar.empty()
+                            status_text.success(f"✅ Scanning Complete! Found {len(st.session_state['captured_images'])} slides.")
                         
                 if proxy_url:
                     os.environ.pop('http_proxy', None)
