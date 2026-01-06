@@ -26,7 +26,6 @@ if 'url_input' not in st.session_state:
     st.session_state['url_input'] = ""
 if 'captured_images' not in st.session_state:
     st.session_state['captured_images'] = []
-# New state to persist the downloaded file across re-runs
 if 'ready_segment' not in st.session_state:
     st.session_state['ready_segment'] = None 
 
@@ -42,7 +41,7 @@ else:
 @st.cache_resource
 def setup_cookies_file():
     if "cookies" not in st.secrets:
-        st.warning("⚠️ No 'cookies' found in secrets!")
+        st.warning("⚠️ No 'cookies' found in secrets! YouTube will treat this as a bot.")
         return None
     try:
         cookies_content = st.secrets["cookies"]
@@ -78,7 +77,14 @@ class MyLogger:
 # --- HELPERS: METADATA ---
 def get_video_info(youtube_url, cookies_file=None, proxy=None):
     logger = MyLogger()
-    ydl_opts = {'quiet': True, 'no_warnings': True, 'logger': logger, 'nocheckcertificate': True}
+    # ADDED USER AGENT TO BYPASS BOT CHECK
+    ydl_opts = {
+        'quiet': True, 
+        'no_warnings': True, 
+        'logger': logger, 
+        'nocheckcertificate': True,
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    }
     if cookies_file: ydl_opts['cookiefile'] = cookies_file
     if proxy: ydl_opts['proxy'] = proxy
     try:
@@ -120,7 +126,6 @@ if st.button("Fetch Info 🔎"):
             if info:
                 st.session_state['video_info'] = info
                 st.session_state['url_input'] = url 
-                # Reset previous results when new video is loaded
                 st.session_state['ready_segment'] = None
                 st.session_state['captured_images'] = []
                 st.rerun() 
@@ -156,7 +161,7 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
     
     selected_q_label = st.selectbox("Choose quality:", list(quality_options.keys()))
 
-    # --- TIME RANGE SELECTION (SEGMENTS/CHAPTERS) ---
+    # --- TIME RANGE SELECTION ---
     st.subheader("3. Select Segments to Download")
     
     chapters = info.get('chapters')
@@ -205,14 +210,13 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
     start_scan_btn = col_btn_1.button("Download & Scan 🚀", type="primary")
     process_dl_btn = col_btn_2.button("Download Segment Only 📥")
 
-    # Common Vars
     format_str = quality_options[selected_q_label]
     def download_range_func(info_dict, ydl):
         return [{'start_time': start_val, 'end_time': end_val}]
 
     # --- DOWNLOAD ONLY LOGIC ---
     if process_dl_btn:
-        st.session_state['captured_images'] = [] # Clear images to avoid showing stale PDF button
+        st.session_state['captured_images'] = []
         with tempfile.TemporaryDirectory() as tmp_dir:
             ydl_opts = {
                 'format': format_str,
@@ -222,6 +226,8 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                 'quiet': True,
                 'no_warnings': True,
                 'download_ranges': download_range_func,
+                # ADDED USER AGENT HERE TOO
+                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             }
             try:
                 with st.spinner("Downloading video segment..."):
@@ -235,7 +241,6 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                     with open(file_path, "rb") as f:
                         file_bytes = f.read()
                     
-                    # Store in session state so button persists
                     st.session_state['ready_segment'] = {
                         'name': file_name,
                         'data': file_bytes
@@ -265,7 +270,6 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                 progress_bar.progress(1.0)
                 status_text.text("Download complete. Starting Scan...")
 
-        # Temporary Directory for Download & Scan
         with tempfile.TemporaryDirectory() as tmp_dir:
             ydl_opts = {
                 'format': format_str,
@@ -276,21 +280,20 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                 'quiet': True,
                 'no_warnings': True,
                 'download_ranges': download_range_func,
+                # ADDED USER AGENT HERE TOO
+                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             }
 
             try:
-                # 1. DOWNLOAD
                 with st.spinner("Downloading video segments to server..."):
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         ydl.download([url])
                 
-                # Check file
                 files = os.listdir(tmp_dir)
                 if files:
                     file_name = files[0]
                     file_path = os.path.join(tmp_dir, file_name)
                     
-                    # SAVE FILE DATA FOR LATER DOWNLOAD
                     with open(file_path, "rb") as f:
                         file_bytes = f.read()
                     
@@ -299,7 +302,6 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                         'data': file_bytes
                     }
 
-                    # 2. SCANNING LOGIC
                     status_text.info(f"📂 Scanning local file: {file_name}")
                     
                     cap = cv2.VideoCapture(file_path)
@@ -355,7 +357,6 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
                                 if retval:
                                     st.session_state['captured_images'].append(buffer)
                                 
-                                # Correct timestamp
                                 current_file_time = current_frame_pos / fps
                                 actual_video_time = current_file_time + start_val
                                 time_str = fmt_time(actual_video_time)
@@ -382,7 +383,6 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
         st.subheader("📥 Downloads")
         col_res_1, col_res_2 = st.columns(2)
         
-        # 1. Video Segment Download (Available for both modes)
         with col_res_1:
             if st.session_state['ready_segment']:
                 st.download_button(
@@ -395,7 +395,6 @@ if st.session_state['video_info'] and url == st.session_state['url_input']:
             else:
                 st.info("No video segment ready.")
 
-        # 2. PDF Download (Only if scan happened)
         with col_res_2:
             if len(st.session_state.get('captured_images', [])) > 0:
                 pdf_path = create_pdf(st.session_state['captured_images'])
